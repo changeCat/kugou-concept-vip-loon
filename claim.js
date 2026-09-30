@@ -1,4 +1,4 @@
-/* global $httpClient, $persistentStore, $notification, $done, console */
+/* global $httpClient, $persistentStore, $notification, $done, $argument, console */
 (function () {
   "use strict";
   var AUTH_KEY = "kgcv.auth.v1";
@@ -74,11 +74,12 @@
     }).join("");
   }
 
-  function signedRequest(method, path, extra, auth) {
+  function signedRequest(method, path, extra, auth, queryProfile) {
+    if (queryProfile && method !== "get") throw new Error("参数对照仅允许查询");
     var clienttime = String(Math.floor(Date.now() / 1000));
     var params = {
-      dfid: auth.dfid, mid: auth.mid, uuid: "-", appid: APP_ID,
-      clientver: CLIENT_VERSION, clienttime: clienttime,
+      dfid: auth.dfid, mid: auth.mid, uuid: "-", appid: queryProfile ? queryProfile.appid : APP_ID,
+      clientver: queryProfile ? queryProfile.clientver : CLIENT_VERSION, clienttime: clienttime,
       token: auth.token, userid: auth.userid
     };
     Object.keys(extra).forEach(function (key) { params[key] = String(extra[key]); });
@@ -207,6 +208,24 @@
       return;
     }
     if (before === "unknown") {
+      // A controlled, read-only comparison, not an assumed iOS signing implementation.
+      // Change only appid/clientver; keep salt, UA, device and endpoint identical.
+      if (typeof $argument !== "undefined" && $argument === "manual" &&
+          code(record) === 51002 && auth.appid === "3114" && /^\d{1,8}$/.test(auth.clientver || "")) {
+        console.log("Android 查询：" + failureDetail(record, auth));
+        console.log("只读参数对照：appid=" + auth.appid + "，clientver=" + auth.clientver +
+          "；仅替换这两个参数，沿用参考签名算法及其他参数；不会领取。");
+        try {
+          var comparison = await signedRequest("get", "/youth/v1/activity/get_month_vip_record", { latest_limit: "100" }, auth,
+            { appid: auth.appid, clientver: auth.clientver });
+          var comparisonState = recordState(comparison, today);
+          var summary = ok(comparison) ? "接口接受请求；记录判断=" + comparisonState : failureDetail(comparison, auth);
+          notify("原配置查询返回 51002；捕获参数对照结果：" + summary + "。本次仅查询，未领取。");
+        } catch (_) {
+          notify("原配置查询返回 51002；捕获参数对照查询失败。本次未发起领取。");
+        }
+        return;
+      }
       notify("无法确认今天是否已领取，本次未发起领取。记录接口：" + failureDetail(record, auth));
       return;
     }
