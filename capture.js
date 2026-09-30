@@ -43,6 +43,7 @@
   var requestMid = source.mid || source.kugou_api_mid || header("mid") || "";
   var requestDfid = source.dfid || header("dfid") || "";
   var requestAppid = source.appid || header("appid") || "";
+  var requestClientver = source.clientver || header("clientver") || "";
   var match = /^https:\/\/([^/]+)/i.exec(url);
   var now = new Date();
   var date = now.getFullYear() + "-" + (now.getMonth() + 1) + "-" + now.getDate();
@@ -80,20 +81,29 @@
 
   var previous = readStore(STORE_KEY);
   var sameUser = previous.userid === userid;
-  var mid = requestMid || (sameUser && previous.mid) || "";
-  var dfid = requestDfid || (sameUser && previous.dfid) || "-";
+  // Sharing a userid does not make credentials from different apps interchangeable.
+  var sameSession = sameUser && previous.token === token &&
+    (appid === "未知" || !previous.appid || previous.appid === appid) &&
+    (!requestMid || previous.mid === requestMid);
+  var mid = requestMid || (sameSession && previous.mid) || "";
+  var dfid = requestDfid || (sameSession && previous.dfid) || "-";
+  var savedAppid = appid !== "未知" ? appid : (sameSession && previous.appid) || "";
+  var clientver = /^\d{1,8}$/.test(requestClientver) ? requestClientver : (sameSession && previous.clientver) || "";
   var device = {
     userid: userid,
     token: token,
     mid: mid,
     dfid: dfid,
+    appid: savedAppid,
+    clientver: clientver,
     capturedAt: new Date().toISOString()
   };
   if (!/^[A-Za-z0-9._~-]{6,128}$/.test(mid) || !/^[A-Za-z0-9._~-]{1,128}$/.test(dfid)) {
     $done({});
     return;
   }
-  if (sameUser && previous.token === token && previous.mid === mid && previous.dfid === dfid) {
+  if (sameUser && previous.token === token && previous.mid === mid && previous.dfid === dfid &&
+      previous.appid === savedAppid && previous.clientver === clientver) {
     $done({});
     return;
   }

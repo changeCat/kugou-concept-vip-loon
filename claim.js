@@ -1,4 +1,4 @@
-/* global $httpClient, $persistentStore, $notification, $done */
+/* global $httpClient, $persistentStore, $notification, $done, console */
 (function () {
   "use strict";
   var AUTH_KEY = "kgcv.auth.v1";
@@ -21,6 +21,7 @@
     return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
   }
   function notify(message) {
+    console.log("酷狗每日 VIP：" + message);
     $notification.post("酷狗概念版每日 VIP", todayLocal(), message);
   }
 
@@ -108,9 +109,35 @@
   }
   function ok(value) { return value && Number(value.status) === 1 && Number(value.error_code || 0) === 0; }
   function code(value) {
-    var n = Number(value && (value.error_code || value.errcode));
+    var raw = value && (value.error_code != null ? value.error_code : value.errcode);
+    if (raw == null || raw === "") return null;
+    var n = Number(raw);
     return Number.isFinite(n) ? n : null;
   }
+  function safeMessage(value, auth) {
+    if (!value || typeof value !== "object") return "未提供错误说明";
+    var raw = value.error_msg || value.errmsg || value.msg || value.message || value.error;
+    if (typeof raw !== "string") return "未提供错误说明";
+    // Error text can echo request parameters. Never print the raw response or URL.
+    Object.keys(auth).forEach(function (key) {
+      if (key === "appid" || key === "clientver" || key === "capturedAt") return;
+      var secret = String(auth[key] || "");
+      if (secret.length < 3) return;
+      raw = raw.split(secret).join("[已隐藏]");
+      raw = raw.split(encodeURIComponent(secret)).join("[已隐藏]");
+    });
+    return raw.replace(/https?:\/\/[^\s<>"']+/gi, "[链接已隐藏]")
+      .replace(/\b(?:token|clienttoken|userid|kugouid|mid|dfid|cookie|authorization|signature)\b\s*[=:]\s*[^\s,;]+/gi, "[字段已隐藏]")
+      .replace(/[A-Za-z0-9_%+./=~-]{24,}/g, "[长字段已隐藏]")
+      .replace(/\d{5,}/g, "[数字已隐藏]")
+      .replace(/[\x00-\x1f\x7f]/g, " ").slice(0, 180) || "未提供错误说明";
+  }
+  function failureDetail(value, auth) {
+    var status = value && value.status;
+    var safeStatus = /^(?:0|1)$/.test(String(status)) ? String(status) : "未知";
+    return "status=" + safeStatus + "，错误码=" + String(code(value)) + "，说明：" + safeMessage(value, auth);
+  }
+  function sourceNumber(value) { return /^\d{1,8}$/.test(String(value || "")) ? String(value) : "未记录"; }
   function dateOf(item) {
     if (typeof item === "string") {
       var direct = item.match(/^\d{4}-\d{2}-\d{2}/);
@@ -169,6 +196,8 @@
       return;
     }
     var record;
+    console.log("请求配置：Android Lite appid=" + APP_ID + "，clientver=" + CLIENT_VERSION +
+      "；凭证来源 appid=" + sourceNumber(auth.appid) + "，clientver=" + sourceNumber(auth.clientver));
     try { record = await signedRequest("get", "/youth/v1/activity/get_month_vip_record", { latest_limit: "100" }, auth); }
     catch (_) { notify("月度领取记录查询失败，本次未发起领取。"); return; }
     var before = recordState(record, today);
@@ -178,7 +207,7 @@
       return;
     }
     if (before === "unknown") {
-      notify("无法确认今天是否已领取，本次未发起领取。记录接口错误码：" + String(code(record)));
+      notify("无法确认今天是否已领取，本次未发起领取。记录接口：" + failureDetail(record, auth));
       return;
     }
     if (state && state.userid === auth.userid && state.date === today && state.status === "uncertain") {
@@ -195,7 +224,7 @@
       notify("当天 VIP 领取请求成功。");
       return;
     }
-    notify("领取未确认，错误码：" + String(code(claim)) + "。今天不会重复提交。");
+    notify("领取未确认，" + failureDetail(claim, auth) + "。今天不会重复提交。");
   }
   run().catch(function (_) { notify("脚本执行异常，请查看 Loon 状态；今天不会自动重试领取。"); })
     .then(function () { $done(); });

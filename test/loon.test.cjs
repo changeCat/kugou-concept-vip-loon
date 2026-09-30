@@ -67,6 +67,63 @@ test('accepts encoded token characters from the URL', async () => {
   assert.equal(JSON.parse(result.data.get(authKey)).token, 'TOKEN+123456==');
 });
 
+test('refreshes provenance for existing credentials without guessing a signing profile', async () => {
+  const result = execute('capture.js', {
+    initial: { [authKey]: JSON.stringify(auth) },
+    request: {
+      url: 'https://gateway.kugou.com/test?appid=3114&clientver=12345&userid=12345678&token=TOKEN-123456789&mid=MID123456',
+      headers: {},
+    },
+  });
+  await result.finished;
+  const saved = JSON.parse(result.data.get(authKey));
+  assert.equal(saved.appid, '3114');
+  assert.equal(saved.clientver, '12345');
+  const diagnosis = execute('diagnose.js', { initial: Object.fromEntries(result.data) });
+  await diagnosis.finished;
+  assert.match(diagnosis.logs.join(''), /已保存凭证来源 App ID 3114/);
+});
+
+test('does not reuse another app or token device fields for the same user', async () => {
+  for (const query of ['appid=1005&token=TOKEN-123456789', 'appid=3114&token=DIFFERENT-TOKEN']) {
+    const old = { ...auth, appid: '3114' };
+    const result = execute('capture.js', {
+      initial: { [authKey]: JSON.stringify(old) },
+      request: { url: `https://gateway.kugou.com/test?userid=12345678&${query}`, headers: {} },
+    });
+    await result.finished;
+    assert.deepEqual(JSON.parse(result.data.get(authKey)), old);
+  }
+});
+
+test('record error 51002 logs useful redacted details and never claims', async () => {
+  const credentials = { ...auth, appid: '3114', clientver: '12345' };
+  const result = execute('claim.js', {
+    initial: { [authKey]: JSON.stringify(credentials) },
+    replies: [{ body: { status: 0, error_code: 51002,
+      msg: `签名校验失败 token=${auth.token} userid=${auth.userid} mid=${auth.mid} https://gateway.kugou.com/?token=HIDDEN-TOKEN`,
+    } }],
+  });
+  await result.finished;
+  assert.deepEqual(result.calls.map(call => call.method), ['GET']);
+  assert.equal(result.data.has(stateKey), false);
+  const output = JSON.stringify([result.notices, result.logs]);
+  assert.match(output, /51002/);
+  assert.match(output, /签名校验失败/);
+  assert.match(output, /凭证来源 appid=3114/);
+  for (const secret of [auth.token, auth.userid, auth.mid, 'HIDDEN-TOKEN']) assert.equal(output.includes(secret), false);
+});
+
+test('missing business error code is reported as unknown rather than zero', async () => {
+  const result = execute('claim.js', {
+    initial: { [authKey]: JSON.stringify(auth) },
+    replies: [{ body: { status: 0 } }],
+  });
+  await result.finished;
+  assert.match(result.logs.join(''), /错误码=null/);
+  assert.equal(result.calls.length, 1);
+});
+
 test('diagnoses a matched request with missing mid without exposing credentials', async () => {
   const result = execute('capture.js', {
     request: {

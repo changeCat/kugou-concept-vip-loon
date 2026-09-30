@@ -6,12 +6,14 @@
     catch (_) { return null; }
   }
   function flag(value) { return value ? "有" : "无"; }
+  function sourceNumber(value) { return /^\d{1,8}$/.test(String(value || "")) ? String(value) : "未记录，需重新打开 App 捕获"; }
 
   var auth = read("kgcv.auth.v1");
   var observation = read("kgcv.observe.v1");
   var lines = [];
   if (auth && auth.userid && auth.token && auth.mid) {
     lines.push("已保存账号尾号 " + String(auth.userid).slice(-4));
+    lines.push("已保存凭证来源 App ID " + sourceNumber(auth.appid) + "；clientver " + sourceNumber(auth.clientver));
   } else {
     lines.push("尚未保存完整凭证");
   }
