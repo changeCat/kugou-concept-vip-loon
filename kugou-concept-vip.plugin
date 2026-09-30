@@ -1,0 +1,20 @@
+#!name = 酷狗概念版每日 VIP
+#!desc = 从已登录的酷狗概念版请求保存凭证，每天核对记录后领取当天 VIP
+#!author = changeCat
+#!homepage = https://github.com/changeCat/kugou-concept-vip-loon
+#!system = iOS,iPadOS,macOS
+#!loon_version = 3.5.1(983)
+#!tag = 酷狗,签到
+#!type = normal
+
+[Argument]
+enabled = switch,false,tag=启用自动领取,desc=先打开酷狗获取凭证并手动验收，再开启定时
+cron = input,"10 1 * * *",tag=领取时间,desc=按设备本地时区，例如每天 01:10
+
+[Script]
+request if ${url} ~= /^https:\/\/(?:[a-z0-9-]+\.)*kugou\.com\//i then script("https://raw.githubusercontent.com/changeCat/kugou-concept-vip-loon/main/capture.js") with tag="酷狗凭证捕获", timeout=20
+cron ${cron} then script("https://raw.githubusercontent.com/changeCat/kugou-concept-vip-loon/main/claim.js") with enable=${enabled}, tag="酷狗每日 VIP", timeout=120
+generic then script("https://raw.githubusercontent.com/changeCat/kugou-concept-vip-loon/main/claim.js") with tag="手动核对并领取 VIP", timeout=120
+
+[MitM]
+hostname = *.kugou.com
