@@ -15,6 +15,7 @@ cron = input,"10 1 * * *",tag=领取时间,desc=按设备本地时区，例如�
 request if ${url} ~= /^https:\/\/(?:[a-z0-9-]+\.)*kugou\.com\//i then script("https://raw.githubusercontent.com/changeCat/kugou-concept-vip-loon/main/capture.js") with tag="酷狗凭证捕获", timeout=20
 cron ${cron} then script("https://raw.githubusercontent.com/changeCat/kugou-concept-vip-loon/main/claim.js") with enable=${enabled}, tag="酷狗每日 VIP", timeout=120
 generic then script("https://raw.githubusercontent.com/changeCat/kugou-concept-vip-loon/main/claim.js") with tag="手动核对并领取 VIP", timeout=120
+generic then script("https://raw.githubusercontent.com/changeCat/kugou-concept-vip-loon/main/diagnose.js") with tag="检查酷狗捕获状态", timeout=20
 
 [MitM]
 hostname = *.kugou.com

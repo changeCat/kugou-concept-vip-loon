@@ -8,6 +8,7 @@ const vm = require('node:vm');
 const project = path.resolve(__dirname, '..');
 const authKey = 'kgcv.auth.v1';
 const stateKey = 'kgcv.claim.v1';
+const observeKey = 'kgcv.observe.v1';
 const auth = { userid: '12345678', token: 'TOKEN-123456789', mid: 'MID123456', dfid: '-' };
 const day = new Date();
 const today = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
@@ -15,6 +16,7 @@ const today = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0'
 function execute(file, { initial = {}, request, replies = [] } = {}) {
   const data = new Map(Object.entries(initial));
   const notices = [];
+  const logs = [];
   const calls = [];
   let done;
   const finished = new Promise(resolve => { done = resolve; });
@@ -33,9 +35,9 @@ function execute(file, { initial = {}, request, replies = [] } = {}) {
     $notification: { post: (...args) => notices.push(args) },
     $httpClient: { get: client('GET'), post: client('POST') },
     $done: () => done(),
-    console,
+    console: { log: (...args) => logs.push(args.join(' ')) },
   }, { filename: file });
-  return { finished, data, notices, calls };
+  return { finished, data, notices, calls, logs };
 }
 
 test('captures an authenticated request without copying unrelated headers', async () => {
@@ -63,6 +65,34 @@ test('accepts encoded token characters from the URL', async () => {
   });
   await result.finished;
   assert.equal(JSON.parse(result.data.get(authKey)).token, 'TOKEN+123456==');
+});
+
+test('diagnoses a matched request with missing mid without exposing credentials', async () => {
+  const result = execute('capture.js', {
+    request: {
+      url: 'https://gateway.kugou.com/test?appid=3116&userid=12345678&token=TOKEN-123456789',
+      headers: {},
+    },
+  });
+  await result.finished;
+  assert.equal(result.data.has(authKey), false);
+  const observation = JSON.parse(result.data.get(observeKey));
+  assert.equal(observation.host, 'gateway.kugou.com');
+  assert.equal(observation.appid, '3116');
+  assert.equal(observation.fields.token, true);
+  assert.equal(observation.fields.mid, false);
+  assert.equal(JSON.stringify(observation).includes('TOKEN-123456789'), false);
+
+  const diagnosis = execute('diagnose.js', { initial: Object.fromEntries(result.data) });
+  await diagnosis.finished;
+  assert.match(diagnosis.notices[0][2], /mid 无/);
+  assert.equal(diagnosis.logs.join('').includes('TOKEN-123456789'), false);
+});
+
+test('diagnoses when no KuGou request has reached the capture script', async () => {
+  const diagnosis = execute('diagnose.js');
+  await diagnosis.finished;
+  assert.match(diagnosis.notices[0][2], /尚未命中插件的 kugou\.com 请求/);
 });
 
 test('checks remote record, signs both requests, and claims once', async () => {

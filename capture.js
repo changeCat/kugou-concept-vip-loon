@@ -1,8 +1,9 @@
 /* global $request, $persistentStore, $notification, $done */
-// Only the minimum credentials needed by claim.js are stored; never log a request.
+// Store only required credentials and a separate field-presence summary; never log request data.
 (function () {
   "use strict";
   var STORE_KEY = "kgcv.auth.v1";
+  var OBSERVE_KEY = "kgcv.observe.v1";
   var url = $request && $request.url || "";
   if (!/^https:\/\/(?:[a-z0-9-]+\.)*kugou\.com\//i.test(url)) {
     $done({});
@@ -29,8 +30,8 @@
     });
     return result;
   }
-  function readStore() {
-    try { return JSON.parse($persistentStore.read(STORE_KEY) || "null") || {}; }
+  function readStore(key) {
+    try { return JSON.parse($persistentStore.read(key) || "null") || {}; }
     catch (_) { return {}; }
   }
   var query = url.indexOf("?") < 0 ? {} : pairs(url.slice(url.indexOf("?") + 1), true);
@@ -39,15 +40,48 @@
   var source = Object.assign({}, cookie, authorization, query);
   var token = source.token || source.clienttoken || "";
   var userid = source.userid || source.kugouid || "";
-  if (!/^[^\s;&]{8,512}$/.test(token) || !/^\d{1,20}$/.test(userid) || userid === "0") {
+  var requestMid = source.mid || source.kugou_api_mid || header("mid") || "";
+  var requestDfid = source.dfid || header("dfid") || "";
+  var requestAppid = source.appid || header("appid") || "";
+  var match = /^https:\/\/([^/]+)/i.exec(url);
+  var now = new Date();
+  var date = now.getFullYear() + "-" + (now.getMonth() + 1) + "-" + now.getDate();
+  var previousObservation = readStore(OBSERVE_KEY);
+  var sameDay = previousObservation.date === date;
+  var fields = {
+    token: /^[^\s;&]{8,512}$/.test(token),
+    userid: /^\d{1,20}$/.test(userid) && userid !== "0",
+    mid: /^[A-Za-z0-9._~-]{6,128}$/.test(requestMid)
+  };
+  var appid = /^\d{1,8}$/.test(String(requestAppid)) ? String(requestAppid) : "未知";
+  var observation = {
+    date: date,
+    lastSeenAt: now.toISOString(),
+    host: match ? match[1].toLowerCase() : "",
+    appid: appid,
+    fields: fields,
+    seen: {
+      token: fields.token || (sameDay && previousObservation.seen && previousObservation.seen.token) || false,
+      userid: fields.userid || (sameDay && previousObservation.seen && previousObservation.seen.userid) || false,
+      mid: fields.mid || (sameDay && previousObservation.seen && previousObservation.seen.mid) || false
+    }
+  };
+  var changed = !sameDay || previousObservation.host !== observation.host ||
+    previousObservation.appid !== appid ||
+    JSON.stringify(previousObservation.fields) !== JSON.stringify(fields) ||
+    JSON.stringify(previousObservation.seen) !== JSON.stringify(observation.seen);
+  if (changed || now.getTime() - Date.parse(previousObservation.lastSeenAt || 0) > 30000) {
+    $persistentStore.write(JSON.stringify(observation), OBSERVE_KEY);
+  }
+  if (!fields.token || !fields.userid) {
     $done({});
     return;
   }
 
-  var previous = readStore();
+  var previous = readStore(STORE_KEY);
   var sameUser = previous.userid === userid;
-  var mid = source.mid || source.kugou_api_mid || header("mid") || (sameUser && previous.mid) || "";
-  var dfid = source.dfid || header("dfid") || (sameUser && previous.dfid) || "-";
+  var mid = requestMid || (sameUser && previous.mid) || "";
+  var dfid = requestDfid || (sameUser && previous.dfid) || "-";
   var device = {
     userid: userid,
     token: token,

@@ -11,14 +11,15 @@
 | `kugou-concept-vip.plugin` | Loon 插件、动态 Cron 和 HTTPS 解密域名 |
 | `capture.js` | 从酷狗请求的 Cookie、Authorization 或 URL 参数读取凭证，保存到 Loon 本地 |
 | `claim.js` | 查询月度记录，确认未领后提交一次当天领取，并发出通知 |
+| `diagnose.js` | 手动检查请求是否命中及必要字段是否出现，不显示凭证值 |
 
 使用 Loon 3.5.1 (983) 或更新版本。插件采用[新版 Script 语法](https://nsloon.app/docs/Script/script_v2/)；脚本使用 [Loon Script API](https://nsloon.app/docs/Script/script_api/)。
 
 ## 安装和首次验收
 
-1. 在 Loon 的插件页面添加 `https://raw.githubusercontent.com/changeCat/kugou-concept-vip-loon/main/kugou-concept-vip.plugin`，并启用插件。也可以使用[插件导入 Scheme](https://nsloon.app/docs/Scheme/)。插件会自动下载两个脚本，无需单独导入。
+1. 在 Loon 的插件页面添加 `https://raw.githubusercontent.com/changeCat/kugou-concept-vip-loon/main/kugou-concept-vip.plugin`，并启用插件。也可以使用[插件导入 Scheme](https://nsloon.app/docs/Scheme/)。插件会自动下载脚本，无需单独导入。
 2. 在 Loon 安装并信任 HTTPS 解密证书，确认插件的 `*.kugou.com` 域名已经参与 MitM。无需把证书或账号凭证写入仓库。
-3. 保持 Loon 运行，打开已经登录的**酷狗概念版**，进入个人页面或 VIP 页面，等待“签到凭证已保存”通知。请求必须经过同一设备的 Loon；脚本只在同时取得有效 `token`、`userid` 和 `mid` 后保存。
+3. 先退出普通酷狗和酷狗畅听版，保持 Loon 运行，只打开已经登录的**酷狗概念版**，进入个人页面或 VIP 页面。随后手动运行 Loon 脚本“检查酷狗捕获状态”：它会显示最近命中的域名、请求中的 App ID 和必要字段是否出现，不显示字段值。请求必须经过同一设备的 Loon；脚本只在同时取得有效 `token`、`userid` 和 `mid` 后保存。
 4. 在 Loon 的脚本页面手动运行“手动核对并领取 VIP”，检查通知及酷狗 App 中当天的领取状态。首次执行可能直接领取当天权益；如果只想先验证抓取，请等当天已在 App 内领过后再手动执行。
 5. 确认一次真实结果后，在插件参数中开启“启用自动领取”。默认 Cron 是设备本地时间每天 `01:10`，可以修改。启用前确认设备时区正确，且没有其他自动领取任务同时运行。
 
@@ -36,7 +37,8 @@
 
 | 现象 | 检查方式 |
 | --- | --- |
-| 打开 App 后没有“凭证已保存”通知 | 确认 Loon 正在处理该 App 的 HTTPS 请求、解密证书已信任、`*.kugou.com` 命中；App 如果没有在可见请求中同时发送必要字段，需要补充经过脱敏的请求字段名后调整捕获规则。 |
+| 打开 App 后没有“凭证已保存”通知 | 运行“检查酷狗捕获状态”。若没有命中请求，确认 Loon 正在处理概念版的 HTTPS 请求、脚本与 MitM 已启用、证书已信任；若已命中但字段不全，请只提供诊断通知中的域名、App ID 与字段有无，不要发送 Token、Cookie 或完整 URL。 |
+| 手动运行“检查酷狗捕获状态”也没有通知 | 查看 Loon 的脚本运行日志。若脚本未运行，检查插件是否已更新并启用、脚本开关是否打开；若有日志但没有通知，检查 Loon 的系统通知权限。 |
 | “尚无完整凭证” | 手动打开概念版 App 并浏览个人或活动页面；目前必须从同一条请求或同一账号的已有记录得到 `mid`。 |
 | “无法确认今天是否已领取” | 月度记录返回形状或错误码与脚本认识的格式不同。查看 Loon 运行状态；仅提供脱敏后的响应字段名和错误码来适配，勿贴 Token。 |
 | “领取请求结果不明确” | 先到酷狗 App 查看权益。脚本为防止重复提交，不会在今天再次请求领取。 |
