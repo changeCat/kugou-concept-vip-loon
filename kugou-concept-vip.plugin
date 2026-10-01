@@ -8,16 +8,20 @@
 #!type = normal
 
 [Argument]
+signature_debug = switch,false,tag=临时签名诊断,desc=仅核对App的youth GET请求；打开VIP页面取样后立即关闭，再运行检查App签名
 capture_enabled = switch,true,tag=启用凭证捕获,desc=保存凭证后可关闭以停止捕获记录；登录失效或切换账号时重新开启
 capture_wide = switch,false,tag=临时扩大捕获范围,desc=默认只捕获 youth 活动请求；个人或VIP页面无法捕获时临时开启，用完关闭
 enabled = switch,false,tag=启用自动领取,desc=先打开酷狗获取凭证并手动验收，再开启定时
 cron = input,"10 1 * * *",tag=领取时间,desc=按设备本地时区，例如每天 01:10
 
 [Script]
+response if ${url} ~= /^https:\/\/gateway\.kugou\.com\/youth\//i && ${request.method} == "GET" && ${response.status} == 200 then script("https://raw.githubusercontent.com/changeCat/kugou-concept-vip-loon/main/signature-check.js") with enable=${signature_debug}, tag="酷狗签名本地核对", requires_body=true, timeout=20
 request if ${url} ~= /^https:\/\/gateway\.kugou\.com\//i && (${url} ~= /^https:\/\/gateway\.kugou\.com\/youth\//i || ${capture_wide} == true) && (${url} ~= /[?&](?:token|clienttoken)=[^&]+/i || ${request.header['Cookie']} ~= /(?:^|[;&\s])(?:token|clienttoken)=/i || ${request.header['Authorization']} ~= /(?:^|[;&\s])(?:token|clienttoken)=/i) then script("https://raw.githubusercontent.com/changeCat/kugou-concept-vip-loon/main/capture.js") with enable=${capture_enabled}, tag="酷狗凭证捕获", timeout=20
 cron ${cron} then script("https://raw.githubusercontent.com/changeCat/kugou-concept-vip-loon/main/claim.js") with enable=${enabled}, tag="酷狗每日 VIP", timeout=120
 generic then script("https://raw.githubusercontent.com/changeCat/kugou-concept-vip-loon/main/claim.js", "manual") with tag="手动核对并领取 VIP", timeout=120
 generic then script("https://raw.githubusercontent.com/changeCat/kugou-concept-vip-loon/main/diagnose.js") with tag="检查酷狗捕获状态", timeout=20
+generic then script("https://raw.githubusercontent.com/changeCat/kugou-concept-vip-loon/main/signature-check.js") with tag="检查 App 签名", timeout=20
+generic then script("https://raw.githubusercontent.com/changeCat/kugou-concept-vip-loon/main/signature-check.js", "clear") with tag="清除签名诊断摘要", timeout=20
 
 [MitM]
 hostname = *.kugou.com
