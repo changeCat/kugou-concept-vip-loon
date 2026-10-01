@@ -98,7 +98,7 @@ test('does not reuse another app or token device fields for the same user', asyn
 });
 
 test('record error 51002 logs useful redacted details and never claims', async () => {
-  const credentials = { ...auth, appid: '3114', clientver: '12345' };
+  const credentials = { ...auth, appid: '3116', clientver: '12345' };
   const result = execute('claim.js', {
     initial: { [authKey]: JSON.stringify(credentials) },
     replies: [{ body: { status: 0, error_code: 51002,
@@ -111,7 +111,7 @@ test('record error 51002 logs useful redacted details and never claims', async (
   const output = JSON.stringify([result.notices, result.logs]);
   assert.match(output, /51002/);
   assert.match(output, /签名校验失败/);
-  assert.match(output, /凭证来源 appid=3114/);
+  assert.match(output, /凭证来源 appid=3116/);
   for (const secret of [auth.token, auth.userid, auth.mid, 'HIDDEN-TOKEN']) assert.equal(output.includes(secret), false);
 });
 
@@ -123,51 +123,6 @@ test('missing business error code is reported as unknown rather than zero', asyn
   await result.finished;
   assert.match(result.logs.join(''), /错误码=null/);
   assert.equal(result.calls.length, 1);
-});
-
-test('manual 51002 comparison only changes appid/clientver and never claims even on success', async () => {
-  for (const response of [
-    { status: 0, error_code: 51002 },
-    { status: 1, error_code: 0, data: { records: [] } },
-    { status: 1, error_code: 0, data: { records: [{ receive_day: today }] } },
-  ]) {
-    const result = execute('claim.js', {
-      argument: 'manual',
-      initial: { [authKey]: JSON.stringify({ ...auth, appid: '3114', clientver: '12491' }) },
-      replies: [{ body: { status: 0, error_code: 51002 } }, { body: response }],
-    });
-    await result.finished;
-    assert.deepEqual(result.calls.map(call => call.method), ['GET', 'GET']);
-    assert.equal(result.data.has(stateKey), false);
-    const first = new URL(result.calls[0].options.url);
-    const second = new URL(result.calls[1].options.url);
-    assert.equal(first.searchParams.get('appid'), '3116');
-    assert.equal(second.searchParams.get('appid'), '3114');
-    assert.equal(second.searchParams.get('clientver'), '12491');
-    const params = Object.fromEntries(second.searchParams);
-    const signature = params.signature;
-    delete params.signature;
-    const toSign = Object.keys(params).sort().map(key => `${key}=${params[key]}`).join('');
-    const salt = 'LnT6xpN3khm36zse0QzvmgTZ3waWdRSA';
-    assert.equal(signature, crypto.createHash('md5').update(salt + toSign + salt).digest('hex'));
-    for (const key of ['token', 'userid', 'mid', 'dfid', 'uuid', 'latest_limit']) {
-      assert.equal(second.searchParams.get(key), first.searchParams.get(key));
-    }
-    assert.equal(result.calls[0].options.headers['User-Agent'], result.calls[1].options.headers['User-Agent']);
-    assert.match(result.notices.at(-1)[2], /本次仅查询，未领取/);
-  }
-});
-
-test('manual comparison handles network failure without changing claim state', async () => {
-  const result = execute('claim.js', {
-    argument: 'manual',
-    initial: { [authKey]: JSON.stringify({ ...auth, appid: '3114', clientver: '12491' }) },
-    replies: [{ body: { status: 0, error_code: 51002 } }, { error: 'timeout' }],
-  });
-  await result.finished;
-  assert.deepEqual(result.calls.map(call => call.method), ['GET', 'GET']);
-  assert.equal(result.data.has(stateKey), false);
-  assert.match(result.notices.at(-1)[2], /对照查询失败/);
 });
 
 test('diagnoses a matched request with missing mid without exposing credentials', async () => {

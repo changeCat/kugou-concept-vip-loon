@@ -68,10 +68,10 @@ test('unknown algorithm and failed business response are not trusted matches', (
   assert.match(JSON.parse(failed.data.get(key)).samples[0].result, /未确认成功/);
 });
 
-test('rejects Android probes, POST requests and unrelated routes', () => {
+test('rejects Android probes, unsupported methods and unrelated routes', () => {
   const req = request('UNKNOWN');
   for (const input of [
-    { ...req, method: 'POST' },
+    { ...req, method: 'PUT' },
     { ...req, url: req.url.replace('appid=3114', 'appid=3116') },
     { ...req, url: req.url.replace('/youth/', '/other/') },
   ]) assert.equal(run(input, success).data.has(key), false);

@@ -9,8 +9,13 @@
   function sourceNumber(value) { return /^\d{1,8}$/.test(String(value || "")) ? String(value) : "未记录，需重新打开 App 捕获"; }
 
   var auth = read("kgcv.auth.v1");
+  var native = read("kgcv.native.v1");
   var observation = read("kgcv.observe.v1");
   var lines = [];
+  if (native && native.identity) {
+    lines.push("App 已验签账号尾号 " + String(native.identity.userid || "").slice(-4) +
+      "；月度查询配置 " + (native.record ? "已保存" : "未保存") + "；当天领取配置 " + (native.claim ? "已保存" : "未保存"));
+  }
   if (auth && auth.userid && auth.token && auth.mid) {
     lines.push("已保存账号尾号 " + String(auth.userid).slice(-4));
     lines.push("已保存凭证来源 App ID " + sourceNumber(auth.appid) + "；clientver " + sourceNumber(auth.clientver));

@@ -2,6 +2,7 @@
 (function () {
   "use strict";
   var AUTH_KEY = "kgcv.auth.v1";
+  var NATIVE_KEY = "kgcv.native.v1";
   var STATE_KEY = "kgcv.claim.v1";
   var SALT = "LnT6xpN3khm36zse0QzvmgTZ3waWdRSA";
   var BASE_URL = "https://gateway.kugou.com";
@@ -74,12 +75,11 @@
     }).join("");
   }
 
-  function signedRequest(method, path, extra, auth, queryProfile) {
-    if (queryProfile && method !== "get") throw new Error("参数对照仅允许查询");
+  function signedRequest(method, path, extra, auth) {
     var clienttime = String(Math.floor(Date.now() / 1000));
     var params = {
-      dfid: auth.dfid, mid: auth.mid, uuid: "-", appid: queryProfile ? queryProfile.appid : APP_ID,
-      clientver: queryProfile ? queryProfile.clientver : CLIENT_VERSION, clienttime: clienttime,
+      dfid: auth.dfid, mid: auth.mid, uuid: "-", appid: APP_ID,
+      clientver: CLIENT_VERSION, clienttime: clienttime,
       token: auth.token, userid: auth.userid
     };
     Object.keys(extra).forEach(function (key) { params[key] = String(extra[key]); });
@@ -108,7 +108,7 @@
       });
     });
   }
-  function ok(value) { return value && Number(value.status) === 1 && Number(value.error_code || 0) === 0; }
+  function ok(value) { return value && Number(value.status) === 1 && Number(value.error_code || 0) === 0 && Number(value.errcode || 0) === 0; }
   function code(value) {
     var raw = value && (value.error_code != null ? value.error_code : value.errcode);
     if (raw == null || raw === "") return null;
@@ -181,7 +181,98 @@
     return "unknown";
   }
 
+  function nativeRequest(config, kind, identity, today) {
+    var path = kind === "record" ? "/youth/v1/activity/get_month_vip_record" : "/youth/v1/recharge/receive_vip_listen_song";
+    var method = kind === "record" ? "GET" : "POST";
+    var salts = { Web: "NVPh5oo715z5DIWAeQlhMDsWXXQV4hwt", "Android Lite": SALT, "Android 标准版": "OIlwieks28dk2k092lksi2UIkp" };
+    var salt = config && salts[config.algorithm];
+    if (!config || config.path !== path || config.method !== method || !salt || !config.params ||
+        !["s", "ms"].includes(config.timeUnit)) throw new Error("配置无效");
+    var fields = ["appid", "clientver", "token", "userid", "mid", "dfid", "uuid", "srcappid"];
+    if (fields.some(function (k) { return config.params[k] !== identity[k]; })) throw new Error("配置身份不同");
+    var allowed = fields.concat(kind === "record" ? ["latest_limit"] : ["source_id", "receive_day"]);
+    if (Object.keys(config.params).some(function (k) { return allowed.indexOf(k) < 0; })) throw new Error("配置字段无效");
+    var params = Object.assign({}, config.params);
+    params.clienttime = String(config.timeUnit === "ms" ? Date.now() : Math.floor(Date.now() / 1000));
+    if (params.receive_day != null) params.receive_day = today;
+    var body = config.body || "";
+    if (kind === "record" && body) throw new Error("GET 请求体无效");
+    if (body) {
+      var payload = JSON.parse(body);
+      if (!payload || typeof payload !== "object" || Array.isArray(payload) ||
+          Object.keys(payload).some(function (k) { return ["source_id", "receive_day"].indexOf(k) < 0; })) throw new Error("请求体字段无效");
+      // Preserve the captured body byte-for-byte unless the explicit day needs changing.
+      if (payload.receive_day != null) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(payload.receive_day)) throw new Error("日期无效");
+        body = body.replace(/("receive_day"\s*:\s*")\d{4}-\d{2}-\d{2}("\s*[,}])/, function (_, prefix, suffix) { return prefix + today + suffix; });
+      }
+    }
+    var pairs = Object.keys(params).sort().map(function (k) { return k + "=" + params[k]; });
+    if (config.algorithm === "Web") pairs.sort();
+    params.signature = md5(salt + pairs.join("") + body + salt);
+    var headers = {};
+    ["User-Agent", "Content-Type"].forEach(function (k) { if (config.headers && config.headers[k]) headers[k] = config.headers[k]; });
+    var options = { url: BASE_URL + path + "?" + Object.keys(params).map(function (k) {
+      return encodeURIComponent(k) + "=" + encodeURIComponent(params[k]);
+    }).join("&"), headers: headers, timeout: 15000, insecure: false };
+    if (method === "POST") options.body = body;
+    return new Promise(function (resolve, reject) {
+      $httpClient[method.toLowerCase()](options, function (error, response, data) {
+        if (error || !response || Number(response.status) !== 200) { reject(new Error("请求失败")); return; }
+        try { resolve(JSON.parse(String(data))); } catch (_) { reject(new Error("响应格式无效")); }
+      });
+    });
+  }
+  async function runNative(native) {
+    var auth = native.identity;
+    if (!auth || auth.appid !== "3114" || !/^[1-9]\d{0,19}$/.test(auth.userid || "") ||
+        !/^[^\s;&]{8,512}$/.test(auth.token || "") || !/^[A-Za-z0-9._~-]{6,128}$/.test(auth.mid || "") ||
+        !/^[A-Za-z0-9._~-]{1,128}$/.test(auth.dfid || "") || !/^[A-Za-z0-9._~-]{1,128}$/.test(auth.uuid || "") ||
+        !/^\d{1,8}$/.test(auth.srcappid || "") || !/^\d{1,8}$/.test(auth.clientver || "")) {
+      notify("已保存的 App 接口配置不完整，请重新开启临时签名诊断并打开 VIP 记录页面。"); return;
+    }
+    if (!native.record) { notify("尚未保存月度查询配置，请开启临时签名诊断并打开 VIP 记录页面。"); return; }
+    var current = read(AUTH_KEY);
+    if (current && current.userid && current.userid !== auth.userid) {
+      notify("普通捕获与已验签接口属于不同账号，请只打开目标账号的 VIP 记录页面重新学习接口。"); return;
+    }
+    var today = todayLocal();
+    var queryOnly = typeof $argument !== "undefined" && $argument === "query";
+    var state = read(STATE_KEY);
+    if (!queryOnly && state && state.userid === auth.userid && state.date === today && state.status === "confirmed") {
+      notify("今天已确认领取，跳过重复请求。"); return;
+    }
+    console.log("使用 App 已验签配置：月度查询=" + native.record.algorithm + "；appid=" + auth.appid + "；clientver=" + auth.clientver +
+      "；uuid/srcappid 已保留；领取配置=" + (native.claim ? "已保存" : "尚未保存"));
+    var record;
+    try { record = await nativeRequest(native.record, "record", auth, today); }
+    catch (_) { notify("App 配置的月度记录查询失败，本次未领取。"); return; }
+    var before = recordState(record, today);
+    if (before === "unknown") {
+      notify(ok(record) ? "App 配置查询成功，但记录结构尚未识别，本次未领取。" : "App 配置查询被拒绝：" + failureDetail(record, auth)); return;
+    }
+    if (queryOnly) { notify("App 配置查询成功：" + (before === "claimed" ? "今天已领取" : "今天未领取") + "。本次仅查询。"); return; }
+    if (before === "claimed") {
+      write(STATE_KEY, { userid: auth.userid, date: today, status: "confirmed" }); notify("远端记录显示今天已领取。"); return;
+    }
+    if (!native.claim) {
+      notify("App 配置查询成功：今天未领取。尚缺领取接口配置，请开启临时签名诊断，在 App 内正常领取一次后关闭；本次未提交领取。"); return;
+    }
+    if (state && state.userid === auth.userid && state.date === today && state.status === "uncertain") {
+      notify("今天的领取结果曾不明确，不重复提交。"); return;
+    }
+    write(STATE_KEY, { userid: auth.userid, date: today, status: "uncertain" });
+    var result;
+    try { result = await nativeRequest(native.claim, "claim", auth, today); }
+    catch (_) { notify("领取请求未确认。今天仅复查远端记录，不重复提交。"); return; }
+    if (ok(result)) {
+      write(STATE_KEY, { userid: auth.userid, date: today, status: "confirmed" }); notify("当天 VIP 领取请求成功。");
+    } else notify("领取未确认：" + failureDetail(result, auth) + "。今天不会重复提交。");
+  }
+
   async function run() {
+    var native = read(NATIVE_KEY);
+    if (native && native.version === 1) { await runNative(native); return; }
     var auth = read(AUTH_KEY);
     if (!auth || !/^\d{1,20}$/.test(auth.userid || "") ||
         !/^[^\s;&]{8,512}$/.test(auth.token || "") ||
@@ -191,6 +282,9 @@
       return;
     }
     var today = todayLocal();
+    if (auth.appid === "3114") {
+      notify("已确定月度查询使用 Web 签名。请开启临时签名诊断并打开 VIP 记录页面，保存实际 uuid/srcappid 后再运行；不再尝试旧 Android 配置。"); return;
+    }
     var state = read(STATE_KEY);
     if (state && state.userid === auth.userid && state.date === today && state.status === "confirmed") {
       notify("今天已确认领取，跳过重复请求。");
@@ -202,30 +296,15 @@
     try { record = await signedRequest("get", "/youth/v1/activity/get_month_vip_record", { latest_limit: "100" }, auth); }
     catch (_) { notify("月度领取记录查询失败，本次未发起领取。"); return; }
     var before = recordState(record, today);
+    if (typeof $argument !== "undefined" && $argument === "query") {
+      notify(before === "unknown" ? "记录查询未确认：" + failureDetail(record, auth) : "记录查询成功：" + (before === "claimed" ? "今天已领取" : "今天未领取") + "。本次仅查询。"); return;
+    }
     if (before === "claimed") {
       write(STATE_KEY, { userid: auth.userid, date: today, status: "confirmed" });
       notify("远端记录显示今天已领取。");
       return;
     }
     if (before === "unknown") {
-      // A controlled, read-only comparison, not an assumed iOS signing implementation.
-      // Change only appid/clientver; keep salt, UA, device and endpoint identical.
-      if (typeof $argument !== "undefined" && $argument === "manual" &&
-          code(record) === 51002 && auth.appid === "3114" && /^\d{1,8}$/.test(auth.clientver || "")) {
-        console.log("Android 查询：" + failureDetail(record, auth));
-        console.log("只读参数对照：appid=" + auth.appid + "，clientver=" + auth.clientver +
-          "；仅替换这两个参数，沿用参考签名算法及其他参数；不会领取。");
-        try {
-          var comparison = await signedRequest("get", "/youth/v1/activity/get_month_vip_record", { latest_limit: "100" }, auth,
-            { appid: auth.appid, clientver: auth.clientver });
-          var comparisonState = recordState(comparison, today);
-          var summary = ok(comparison) ? "接口接受请求；记录判断=" + comparisonState : failureDetail(comparison, auth);
-          notify("原配置查询返回 51002；捕获参数对照结果：" + summary + "。本次仅查询，未领取。");
-        } catch (_) {
-          notify("原配置查询返回 51002；捕获参数对照查询失败。本次未发起领取。");
-        }
-        return;
-      }
       notify("无法确认今天是否已领取，本次未发起领取。记录接口：" + failureDetail(record, auth));
       return;
     }
