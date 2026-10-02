@@ -1,6 +1,7 @@
 #!name = 酷狗概念版每日 VIP
 #!desc = 从已登录的酷狗概念版请求保存凭证，每天核对记录后领取当天 VIP
 #!author = changeCat
+#!icon = https://is1-ssl.mzstatic.com/image/thumb/Purple221/v4/90/f1/b6/90f1b635-3ac5-777b-5ff9-a3b4444f526c/AppIconGlass-0-0-1x_U007epad-0-1-0-85-220.png/512x512bb.jpg
 #!homepage = https://github.com/changeCat/kugou-concept-vip-loon
 #!system = iOS,iPadOS,macOS
 #!loon_version = 3.5.1(983)
