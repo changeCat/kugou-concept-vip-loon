@@ -16,12 +16,13 @@ const today = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${St
 function sign(params, body = '') {
   return crypto.createHash('md5').update(salt + Object.keys(params).map(k => `${k}=${params[k]}`).sort().join('') + body + salt).digest('hex');
 }
-function run(file, { data = new Map(), request, response, argument, replies = [] } = {}) {
+function run(file, { data = new Map(), request, response, argument, replies = [], onRequest } = {}) {
   const calls = [], logs = [], notices = [];
   let done;
   const finished = new Promise(resolve => { done = resolve; });
   const http = method => (options, callback) => {
     calls.push({ method, options });
+    if (onRequest) onRequest(method, options);
     const next = replies.shift();
     assert.ok(next, 'unexpected network request');
     queueMicrotask(() => callback(next.error, { status: 200 }, JSON.stringify(next.body)));
@@ -135,4 +136,111 @@ test('iOS credentials without learned parameters no longer use the failing Andro
   const result = run('claim.js', { data, argument: 'manual' }); await result.finished;
   assert.equal(result.calls.length, 0);
   assert.match(result.notices.at(-1)[2], /不再尝试旧 Android 配置/);
+});
+
+test('manual Web trial saves a configuration only after success, then cron can reuse it', async () => {
+  const data = new Map(); await learn(data).finished;
+  const result = run('claim.js', { data, argument: 'web_trial',
+    replies: [{ body: { status: 1, data: { records: [] } } }, { body: { status: 1, error_code: 0 } }],
+    onRequest(method) {
+      if (method === 'POST') {
+        assert.equal(JSON.parse(data.get(stateKey)).status, 'uncertain');
+        assert.equal(JSON.parse(data.get(nativeKey)).claim, undefined);
+      }
+    }
+  });
+  await result.finished;
+  assert.deepEqual(result.calls.map(c => c.method), ['GET', 'POST']);
+  const post = result.calls[1].options;
+  const params = Object.fromEntries(new URL(post.url).searchParams);
+  const signature = params.signature; delete params.signature;
+  assert.equal(signature, sign(params, post.body));
+  for (const key of Object.keys(identity)) assert.equal(params[key], identity[key]);
+  assert.equal(params.latest_limit, undefined);
+  assert.equal(params.source_id, '90139');
+  assert.equal(params.receive_day, today);
+  assert.equal(post.body, '');
+  assert.equal(post.headers['Content-Type'], 'application/x-www-form-urlencoded');
+  assert.equal(JSON.parse(data.get(nativeKey)).claim.source, 'web_trial');
+  assert.equal(JSON.parse(data.get(stateKey)).status, 'confirmed');
+  assert.match(result.notices.at(-1)[2], /领取配置已保存/);
+  assert.equal(JSON.stringify([result.logs, result.notices]).includes('PRIVATE'), false);
+
+  // A later day's cron run updates the saved date and needs no experimental argument.
+  data.set(stateKey, JSON.stringify({ userid: identity.userid, date: '2000-01-01', status: 'confirmed' }));
+  const saved = JSON.parse(data.get(nativeKey));
+  saved.claim.params.receive_day = '2000-01-01'; data.set(nativeKey, JSON.stringify(saved));
+  const cron = run('claim.js', { data, replies: [{ body: { status: 1, data: { records: [] } } }, { body: { status: 1 } }] });
+  await cron.finished;
+  assert.deepEqual(cron.calls.map(c => c.method), ['GET', 'POST']);
+  assert.equal(new URL(cron.calls[1].options.url).searchParams.get('receive_day'), today);
+});
+
+test('Web trial stops when today is claimed, record is unknown or query fails', async () => {
+  for (const reply of [
+    { body: { status: 1, data: { records: [{ receive_day: today }] } } },
+    { body: { status: 1, data: { unknown: true } } },
+    { body: { status: 0, error_code: 2006 } },
+    { error: 'timeout' }
+  ]) {
+    const data = new Map(); await learn(data).finished;
+    const result = run('claim.js', { data, argument: 'web_trial', replies: [reply] });
+    await result.finished;
+    assert.deepEqual(result.calls.map(c => c.method), ['GET']);
+    assert.equal(JSON.parse(data.get(nativeKey)).claim, undefined);
+  }
+});
+
+test('failed or timed out Web trial is not learned and cannot be submitted again that day', async () => {
+  for (const reply of [{ error: 'timeout' }, { body: { status: 0, error_code: 2006, msg: 'err signature PRIVATE+TOKEN==' } }]) {
+    const data = new Map(); await learn(data).finished;
+    const result = run('claim.js', { data, argument: 'web_trial', replies: [{ body: { status: 1, data: { records: [] } } }, reply] });
+    await result.finished;
+    assert.deepEqual(result.calls.map(c => c.method), ['GET', 'POST']);
+    assert.equal(JSON.parse(data.get(nativeKey)).claim, undefined);
+    assert.equal(JSON.parse(data.get(stateKey)).status, 'uncertain');
+    assert.equal(JSON.stringify([result.logs, result.notices]).includes('PRIVATE'), false);
+    const again = run('claim.js', { data, argument: 'web_trial', replies: [{ body: { status: 1, data: { records: [] } } }] });
+    await again.finished;
+    assert.deepEqual(again.calls.map(c => c.method), ['GET']);
+  }
+});
+
+test('Web trial requires learned Web parameters and cron never creates a candidate', async () => {
+  const missing = run('claim.js', { argument: 'web_trial', data: new Map([['kgcv.auth.v1', JSON.stringify({ ...identity, appid: '3116' })]]) });
+  await missing.finished; assert.equal(missing.calls.length, 0);
+  for (const argument of [undefined, 'manual', 'query']) {
+    const data = new Map(); await learn(data).finished;
+    const result = run('claim.js', { data, argument, replies: [{ body: { status: 1, data: { records: [] } } }] });
+    await result.finished;
+    assert.deepEqual(result.calls.map(c => c.method), ['GET']);
+    assert.equal(data.has(stateKey), false);
+    assert.equal(JSON.parse(data.get(nativeKey)).claim, undefined);
+  }
+});
+
+test('successful Web trial does not overwrite a changed session', async () => {
+  const data = new Map(); await learn(data).finished;
+  const result = run('claim.js', { data, argument: 'web_trial',
+    replies: [{ body: { status: 1, data: { records: [] } } }, { body: { status: 1 } }],
+    onRequest(method) {
+      if (method === 'POST') {
+        const newer = JSON.parse(data.get(nativeKey)); newer.identity.token = 'NEW-PRIVATE-TOKEN';
+        data.set(nativeKey, JSON.stringify(newer));
+      }
+    }
+  });
+  await result.finished;
+  assert.equal(JSON.parse(data.get(nativeKey)).identity.token, 'NEW-PRIVATE-TOKEN');
+  assert.equal(JSON.parse(data.get(nativeKey)).claim, undefined);
+  assert.match(result.notices.at(-1)[2], /会话已改变/);
+});
+
+test('overlapping queries see the pending mutation before submitting another claim', async () => {
+  const data = new Map(); await learn(data).finished;
+  const replies = () => [{ body: { status: 1, data: { records: [] } } }, { body: { status: 1 } }];
+  const first = run('claim.js', { data, argument: 'web_trial', replies: replies() });
+  const second = run('claim.js', { data, argument: 'web_trial', replies: replies() });
+  await Promise.all([first.finished, second.finished]);
+  assert.equal([...first.calls, ...second.calls].filter(c => c.method === 'POST').length, 1);
 });

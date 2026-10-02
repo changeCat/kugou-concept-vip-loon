@@ -238,6 +238,7 @@
     }
     var today = todayLocal();
     var queryOnly = typeof $argument !== "undefined" && $argument === "query";
+    var webTrial = typeof $argument !== "undefined" && $argument === "web_trial";
     var state = read(STATE_KEY);
     if (!queryOnly && state && state.userid === auth.userid && state.date === today && state.status === "confirmed") {
       notify("今天已确认领取，跳过重复请求。"); return;
@@ -255,24 +256,63 @@
     if (before === "claimed") {
       write(STATE_KEY, { userid: auth.userid, date: today, status: "confirmed" }); notify("远端记录显示今天已领取。"); return;
     }
-    if (!native.claim) {
-      notify("App 配置查询成功：今天未领取。尚缺领取接口配置，请开启临时签名诊断，在 App 内正常领取一次后关闭；本次未提交领取。"); return;
-    }
+    // Re-read after the asynchronous query so overlapping runs see a pending claim.
+    state = read(STATE_KEY);
     if (state && state.userid === auth.userid && state.date === today && state.status === "uncertain") {
       notify("今天的领取结果曾不明确，不重复提交。"); return;
     }
+    if (state && state.userid === auth.userid && state.date === today && state.status === "confirmed") {
+      notify("今天已确认领取，跳过重复请求。"); return;
+    }
+    var claimConfig = native.claim;
+    var tryingWeb = !claimConfig && webTrial;
+    if (tryingWeb) {
+      if (native.record.algorithm !== "Web") {
+        notify("测试 Web 领取需要已保存的 Web 月度查询配置，本次未领取。"); return;
+      }
+      // Compatibility trial, not a learned native App signature. Only persist on success.
+      claimConfig = {
+        method: "POST", path: "/youth/v1/recharge/receive_vip_listen_song", algorithm: "Web",
+        params: Object.assign({}, auth, { source_id: "90139", receive_day: today }),
+        body: "", timeUnit: native.record.timeUnit,
+        headers: { "Content-Type": "application/x-www-form-urlencoded" }, source: "web_trial"
+      };
+      if (native.record.headers && native.record.headers["User-Agent"]) claimConfig.headers["User-Agent"] = native.record.headers["User-Agent"];
+      console.log("手动测试 Web 领取：查询已确认今天未领取；使用已保存的同一会话，仅提交一次。领取接口是否接受此签名尚待验证。");
+    }
+    if (!claimConfig) {
+      notify("App 配置查询成功：今天未领取。尚缺领取接口配置，可手动运行“测试 Web 领取（当天一次）”验证；本次未提交领取。"); return;
+    }
     write(STATE_KEY, { userid: auth.userid, date: today, status: "uncertain" });
     var result;
-    try { result = await nativeRequest(native.claim, "claim", auth, today); }
+    try { result = await nativeRequest(claimConfig, "claim", auth, today); }
     catch (_) { notify("领取请求未确认。今天仅复查远端记录，不重复提交。"); return; }
     if (ok(result)) {
-      write(STATE_KEY, { userid: auth.userid, date: today, status: "confirmed" }); notify("当天 VIP 领取请求成功。");
+      write(STATE_KEY, { userid: auth.userid, date: today, status: "confirmed" });
+      if (tryingWeb) {
+        var latest = read(NATIVE_KEY);
+        var fields = ["appid", "clientver", "token", "userid", "mid", "dfid", "uuid", "srcappid"];
+        if (!latest || latest.version !== 1 || !latest.identity || fields.some(function (k) { return latest.identity[k] !== auth[k]; })) {
+          notify("Web 领取请求成功，但本地会话已改变，未保存领取配置。请核对当前账号配置。"); return;
+        }
+        if (!latest.claim) {
+          claimConfig.verifiedAt = new Date().toISOString();
+          latest.claim = claimConfig;
+          try { write(NATIVE_KEY, latest); }
+          catch (_) { notify("Web 领取请求成功，但领取配置保存失败，暂不能开启自动领取。"); return; }
+        }
+        notify("Web 领取请求成功，领取配置已保存。可开启自动领取，之后每天使用此配置。"); return;
+      }
+      notify("当天 VIP 领取请求成功。");
     } else notify("领取未确认：" + failureDetail(result, auth) + "。今天不会重复提交。");
   }
 
   async function run() {
     var native = read(NATIVE_KEY);
     if (native && native.version === 1) { await runNative(native); return; }
+    if (typeof $argument !== "undefined" && $argument === "web_trial") {
+      notify("测试 Web 领取需要先保存 Web 月度查询配置；请开启临时签名诊断并打开 VIP 记录页面。"); return;
+    }
     var auth = read(AUTH_KEY);
     if (!auth || !/^\d{1,20}$/.test(auth.userid || "") ||
         !/^[^\s;&]{8,512}$/.test(auth.token || "") ||

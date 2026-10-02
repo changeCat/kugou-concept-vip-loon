@@ -19,6 +19,7 @@ response if ${url} ~= /^https:\/\/gateway\.kugou\.com\/youth\//i && (${request.m
 request if ${url} ~= /^https:\/\/gateway\.kugou\.com\//i && (${url} ~= /^https:\/\/gateway\.kugou\.com\/youth\//i || ${capture_wide} == true) && (${url} ~= /[?&](?:token|clienttoken)=[^&]+/i || ${request.header['Cookie']} ~= /(?:^|[;&\s])(?:token|clienttoken)=/i || ${request.header['Authorization']} ~= /(?:^|[;&\s])(?:token|clienttoken)=/i) then script("https://raw.githubusercontent.com/changeCat/kugou-concept-vip-loon/main/capture.js") with enable=${capture_enabled}, tag="酷狗凭证捕获", timeout=20
 cron ${cron} then script("https://raw.githubusercontent.com/changeCat/kugou-concept-vip-loon/main/claim.js") with enable=${enabled}, tag="酷狗每日 VIP", timeout=120
 generic then script("https://raw.githubusercontent.com/changeCat/kugou-concept-vip-loon/main/claim.js", "manual") with tag="手动核对并领取 VIP", timeout=120
+generic then script("https://raw.githubusercontent.com/changeCat/kugou-concept-vip-loon/main/claim.js", "web_trial") with tag="测试 Web 领取（当天一次）", timeout=120
 generic then script("https://raw.githubusercontent.com/changeCat/kugou-concept-vip-loon/main/claim.js", "query") with tag="仅查询 VIP 记录", timeout=60
 generic then script("https://raw.githubusercontent.com/changeCat/kugou-concept-vip-loon/main/diagnose.js") with tag="检查酷狗捕获状态", timeout=20
 generic then script("https://raw.githubusercontent.com/changeCat/kugou-concept-vip-loon/main/signature-check.js") with tag="检查 App 签名", timeout=20
