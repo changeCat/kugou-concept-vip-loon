@@ -74,7 +74,9 @@
   if (changed || now.getTime() - Date.parse(previousObservation.lastSeenAt || 0) > 30000) {
     $persistentStore.write(JSON.stringify(observation), OBSERVE_KEY);
   }
-  if (!fields.token || !fields.userid) {
+  // Shared KuGou domains also carry other clients' sessions. Unknown provenance
+  // is diagnostic evidence only; it must never replace Concept credentials.
+  if (appid !== "3114" || !fields.token || !fields.userid) {
     $done({});
     return;
   }

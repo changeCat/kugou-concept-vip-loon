@@ -45,7 +45,7 @@ test('captures an authenticated request without copying unrelated headers', asyn
   const result = execute('capture.js', {
     request: {
       url: 'https://gateway.kugou.com/youth/v1/activity/get_month_vip_record?mid=MID123456&dfid=-',
-      headers: { Cookie: 'userid=12345678; token=TOKEN-123456789; other=private' },
+      headers: { appid: '3114', Cookie: 'userid=12345678; token=TOKEN-123456789; other=private' },
     },
   });
   await result.finished;
@@ -60,7 +60,7 @@ test('captures an authenticated request without copying unrelated headers', asyn
 test('accepts encoded token characters from the URL', async () => {
   const result = execute('capture.js', {
     request: {
-      url: 'https://gateway.kugou.com/test?userid=12345678&token=TOKEN%2B123456%3D%3D&mid=MID123456',
+      url: 'https://gateway.kugou.com/test?appid=3114&userid=12345678&token=TOKEN%2B123456%3D%3D&mid=MID123456',
       headers: {},
     },
   });
@@ -94,6 +94,24 @@ test('does not reuse another app or token device fields for the same user', asyn
     });
     await result.finished;
     assert.deepEqual(JSON.parse(result.data.get(authKey)), old);
+  }
+});
+
+test('complete credentials from other or unknown clients never overwrite Concept credentials', async () => {
+  const old = { ...auth, appid: '3114' };
+  for (const appid of ['1005', '3116', '9999', '']) {
+    for (const userid of [auth.userid, '87654321']) {
+      const result = execute('capture.js', {
+        initial: { [authKey]: JSON.stringify(old), 'kgcv.native.v1': '{"version":1,"marker":"preserve"}' },
+        request: { url: 'https://gateway.kugou.com/youth/test?' + new URLSearchParams({
+          appid, userid, token: 'DIFFERENT-PRIVATE-TOKEN', mid: 'OTHER-MID', dfid: 'OTHER-DFID', clientver: '12345'
+        }), headers: {} },
+      });
+      await result.finished;
+      assert.deepEqual(JSON.parse(result.data.get(authKey)), old);
+      assert.equal(result.data.get('kgcv.native.v1'), '{"version":1,"marker":"preserve"}');
+      assert.equal(result.notices.length, 0);
+    }
   }
 });
 

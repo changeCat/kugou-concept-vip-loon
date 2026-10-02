@@ -301,7 +301,7 @@
     }
     if (!native.record) { notify("尚未保存月度查询配置，请开启临时签名诊断并打开 VIP 记录页面。"); return; }
     var current = read(AUTH_KEY);
-    if (current && current.userid && current.userid !== auth.userid) {
+    if (current && current.appid === "3114" && current.userid && current.userid !== auth.userid) {
       notify("普通捕获与已验签接口属于不同账号，请只打开目标账号的 VIP 记录页面重新学习接口。"); return;
     }
     var today = todayLocal();

@@ -125,7 +125,7 @@ test('uncertain claim or different captured account prevents mutation', async ()
   const result = run('claim.js', { data, replies: [{ body: { status: 1, data: { records: [] } } }] });
   await result.finished;
   assert.equal(result.calls.length, 1);
-  data.set('kgcv.auth.v1', JSON.stringify({ userid: '87654321' }));
+  data.set('kgcv.auth.v1', JSON.stringify({ userid: '87654321', appid: '3114' }));
   const other = run('claim.js', { data }); await other.finished;
   assert.equal(other.calls.length, 0);
   assert.match(other.notices.at(-1)[2], /不同账号/);
@@ -136,6 +136,24 @@ test('iOS credentials without learned parameters no longer use the failing Andro
   const result = run('claim.js', { data, argument: 'manual' }); await result.finished;
   assert.equal(result.calls.length, 0);
   assert.match(result.notices.at(-1)[2], /不再尝试旧 Android 配置/);
+});
+
+test('legacy caches from another or unidentified client do not block the verified Concept session', async () => {
+  for (const appid of ['1005', '3116', '9999', '']) {
+    const data = new Map(); await learn(data).finished; await learn(data, 'claim').finished;
+    const before = data.get(nativeKey);
+    data.set('kgcv.auth.v1', JSON.stringify({ userid: '87654321', appid, token: 'OTHER-PRIVATE-TOKEN' }));
+    const result = run('claim.js', { data, replies: [{ body: { status: 1, data: { records: [] } } }, { body: { status: 1 } }] });
+    await result.finished;
+    assert.deepEqual(result.calls.map(c => c.method), ['GET', 'POST']);
+    for (const call of result.calls) {
+      const params = new URL(call.options.url).searchParams;
+      assert.equal(params.get('userid'), identity.userid);
+      assert.equal(params.get('token'), identity.token);
+      assert.equal(params.get('appid'), '3114');
+    }
+    assert.equal(data.get(nativeKey), before);
+  }
 });
 
 test('manual Web trial saves a configuration only after success, then cron can reuse it', async () => {
