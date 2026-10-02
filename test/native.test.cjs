@@ -244,3 +244,92 @@ test('overlapping queries see the pending mutation before submitting another cla
   await Promise.all([first.finished, second.finished]);
   assert.equal([...first.calls, ...second.calls].filter(c => c.method === 'POST').length, 1);
 });
+
+function startupRequest(changes = {}) {
+  const params = { appid: identity.appid, userid: identity.userid, mid: identity.mid, token: 'NEW+PRIVATE-TOKEN==', ...changes };
+  return { url: 'https://gateway.kugou.com/user/v1/info?' + new URLSearchParams(params), headers: {} };
+}
+
+test('ordinary App request refreshes token only after Web query succeeds and preserves claim template', async () => {
+  const data = new Map(); await learn(data).finished; await learn(data, 'claim').finished;
+  data.set(stateKey, JSON.stringify({ userid: identity.userid, date: today, status: 'uncertain' }));
+  const stateBefore = data.get(stateKey);
+  const oldNative = JSON.parse(data.get(nativeKey));
+  const result = run('claim.js', { data, request: startupRequest(), argument: 'refresh',
+    replies: [{ body: { status: 1, error_code: 0, data: { records: [] } } }],
+    onRequest() { assert.equal(JSON.parse(data.get(nativeKey)).identity.token, identity.token); }
+  });
+  await result.finished;
+  assert.deepEqual(result.calls.map(c => c.method), ['GET']);
+  const params = Object.fromEntries(new URL(result.calls[0].options.url).searchParams);
+  const signature = params.signature; delete params.signature;
+  assert.equal(signature, sign(params));
+  assert.equal(params.token, 'NEW+PRIVATE-TOKEN==');
+  const saved = JSON.parse(data.get(nativeKey));
+  for (const key of Object.keys(identity).filter(k => k !== 'token')) assert.equal(saved.identity[key], identity[key]);
+  assert.equal(saved.record.params.token, params.token);
+  assert.equal(saved.claim.params.token, params.token);
+  assert.equal(saved.claim.algorithm, oldNative.claim.algorithm);
+  assert.equal(saved.claim.body, oldNative.claim.body);
+  assert.equal(data.get(stateKey), stateBefore);
+  assert.equal(JSON.parse(data.get('kgcv.refresh.v1')).status, 'updated');
+  assert.equal(result.notices.length, 1);
+  assert.equal(JSON.stringify([result.notices, result.logs]).includes('PRIVATE'), false);
+  const again = run('claim.js', { data, request: startupRequest(), argument: 'refresh' });
+  await again.finished; assert.equal(again.calls.length, 0); assert.equal(again.notices.length, 0);
+  // Query mode now uses the updated credential; refresh never grants a duplicate claim.
+  const query = run('claim.js', { data, argument: 'query', replies: [{ body: { status: 1, data: { records: [] } } }] });
+  await query.finished;
+  assert.equal(new URL(query.calls[0].options.url).searchParams.get('token'), params.token);
+});
+
+test('refresh rejects unchanged tokens, other apps/accounts/devices, missing identity and script endpoints', async () => {
+  const cases = [startupRequest({ token: identity.token }), startupRequest({ appid: '1005' }),
+    startupRequest({ userid: '87654321' }), startupRequest({ mid: 'OTHER-DEVICE' }), startupRequest({ mid: '' }),
+    startupRequest({ appid: '' }), startupRequest({ token: 'short' })];
+  for (const endpoint of [recordPath, claimPath]) cases.push({ ...startupRequest(), url: startupRequest().url.replace('/user/v1/info', endpoint) });
+  for (const request of cases) {
+    const data = new Map(); await learn(data).finished; await learn(data, 'claim').finished;
+    const before = data.get(nativeKey);
+    const result = run('claim.js', { data, request, argument: 'refresh' }); await result.finished;
+    assert.equal(result.calls.length, 0); assert.equal(data.get(nativeKey), before); assert.equal(result.notices.length, 0);
+  }
+});
+
+test('refresh reads authorization fields and case-insensitive App and device headers', async () => {
+  const data = new Map(); await learn(data).finished;
+  const request = { url: 'https://gateway.kugou.com/user/v1/info', headers: {
+    APPID: '3114', MID: identity.mid, Authorization: 'userid=' + identity.userid + '; token=NEW+PRIVATE-TOKEN=='
+  } };
+  const result = run('claim.js', { data, request, argument: 'refresh', replies: [{ body: { status: 1 } }] });
+  await result.finished;
+  assert.equal(JSON.parse(data.get(nativeKey)).identity.token, 'NEW+PRIVATE-TOKEN==');
+});
+
+test('failed refresh preserves working configuration and throttles startup bursts', async () => {
+  for (const reply of [{ error: 'timeout' }, { body: { status: 0, error_code: 2006 } }]) {
+    const data = new Map(); await learn(data).finished; await learn(data, 'claim').finished;
+    const before = data.get(nativeKey);
+    const result = run('claim.js', { data, request: startupRequest(), argument: 'refresh', replies: [reply] });
+    const concurrent = run('claim.js', { data, request: startupRequest(), argument: 'refresh' });
+    await Promise.all([result.finished, concurrent.finished]);
+    assert.deepEqual(result.calls.map(c => c.method), ['GET']); assert.equal(concurrent.calls.length, 0);
+    assert.equal(data.get(nativeKey), before); assert.equal(result.notices.length, 0);
+    const again = run('claim.js', { data, request: startupRequest(), argument: 'refresh' });
+    await again.finished; assert.equal(again.calls.length, 0);
+  }
+});
+
+test('refresh cannot overwrite concurrent configuration changes', async () => {
+  const data = new Map(); await learn(data).finished;
+  let newer;
+  const result = run('claim.js', { data, request: startupRequest(), argument: 'refresh', replies: [{ body: { status: 1 } }],
+    onRequest() {
+      newer = JSON.parse(data.get(nativeKey)); newer.identity.token = 'OTHER-PRIVATE-TOKEN';
+      data.set(nativeKey, JSON.stringify(newer));
+    }
+  });
+  await result.finished;
+  assert.equal(data.get(nativeKey), JSON.stringify(newer));
+  assert.equal(JSON.parse(data.get('kgcv.refresh.v1')).status, 'changed');
+});

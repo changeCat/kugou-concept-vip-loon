@@ -1,9 +1,10 @@
-/* global $httpClient, $persistentStore, $notification, $done, $argument, console */
+/* global $httpClient, $persistentStore, $notification, $done, $argument, $request, console */
 (function () {
   "use strict";
   var AUTH_KEY = "kgcv.auth.v1";
   var NATIVE_KEY = "kgcv.native.v1";
   var STATE_KEY = "kgcv.claim.v1";
+  var REFRESH_KEY = "kgcv.refresh.v1";
   var SALT = "LnT6xpN3khm36zse0QzvmgTZ3waWdRSA";
   var BASE_URL = "https://gateway.kugou.com";
   var APP_ID = "3116";
@@ -223,6 +224,73 @@
       });
     });
   }
+  // Listen to ordinary App traffic, then validate a replacement token with a read-only
+  // Web query. Keep the proven endpoint/device configuration; never learn it from
+  // another app, account, or device, and never submit a claim from an HTTP hook.
+  async function refreshFromRequest() {
+    if (typeof $request === "undefined" || !$request) return;
+    var url = String($request.url || "");
+    if (!/^https:\/\/gateway\.kugou\.com\//i.test(url) || url.length > 8192 ||
+        /^https:\/\/gateway\.kugou\.com\/youth\/v1\/(?:activity\/get_month_vip_record|recharge\/receive_vip_listen_song)(?:[?#]|$)/i.test(url)) return;
+    var native = read(NATIVE_KEY);
+    if (!native || native.version !== 1 || !native.identity || !native.record || native.record.algorithm !== "Web") return;
+    var headers = $request.headers || {};
+    function header(name) {
+      var key = Object.keys(headers).filter(function (k) { return k.toLowerCase() === name; })[0];
+      return key ? String(headers[key]) : "";
+    }
+    function pairs(value, form) {
+      var result = Object.create(null);
+      String(value || "").split(/[;&]/).forEach(function (part) {
+        var at = part.indexOf("=");
+        if (at < 0) return;
+        var key = part.slice(0, at).trim().toLowerCase();
+        if (Object.prototype.hasOwnProperty.call(result, key)) throw new Error("duplicate");
+        result[key] = decodeURIComponent(form ? part.slice(at + 1).replace(/\+/g, " ") : part.slice(at + 1).trim());
+      });
+      return result;
+    }
+    var source;
+    try {
+      source = Object.assign({}, pairs(header("cookie"), false),
+        pairs(header("authorization").replace(/^\s*(?:bearer|token)\s+/i, ""), false),
+        pairs(url.indexOf("?") < 0 ? "" : url.slice(url.indexOf("?") + 1).split("#")[0], true));
+    } catch (_) { return; }
+    var auth = native.identity;
+    var token = source.token || source.clienttoken || "";
+    var userid = source.userid || source.kugouid || "";
+    var appid = source.appid || header("appid");
+    var mid = source.mid || source.kugou_api_mid || header("mid");
+    if (appid !== "3114" || auth.appid !== appid || userid !== auth.userid || !mid || mid !== auth.mid ||
+        !/^[^\s;&]{8,512}$/.test(token) || token === auth.token) return;
+    var previous = read(REFRESH_KEY);
+    var now = Date.now();
+    // A burst of startup requests gets at most one validation per minute, even on failure.
+    if (previous && now - Number(previous.at) < 60000) return;
+    write(REFRESH_KEY, { at: now, status: "checking" });
+    var candidate = JSON.parse(JSON.stringify(native));
+    candidate.identity.token = token;
+    candidate.record.params.token = token;
+    var response;
+    try { response = await nativeRequest(candidate.record, "record", candidate.identity, todayLocal()); }
+    catch (_) { write(REFRESH_KEY, { at: now, status: "network_failed" }); return; }
+    if (!ok(response)) {
+      write(REFRESH_KEY, { at: now, status: "rejected", code: code(response) }); return;
+    }
+    // A different login/capture may have completed while the query was in flight.
+    if (JSON.stringify(read(NATIVE_KEY)) !== JSON.stringify(native)) {
+      write(REFRESH_KEY, { at: now, status: "changed" }); return;
+    }
+    if (candidate.claim) {
+      if (!candidate.claim.params || candidate.claim.params.token !== auth.token) return;
+      candidate.claim.params.token = token;
+    }
+    candidate.refreshedAt = new Date().toISOString();
+    write(NATIVE_KEY, candidate);
+    write(REFRESH_KEY, { at: now, status: "updated" });
+    $notification.post("酷狗概念版", "登录凭证已更新", "新凭证已通过查询验证，原领取配置已保留。下次定时任务会使用新凭证，无需进入 VIP 页面。");
+  }
+
   async function runNative(native) {
     var auth = native.identity;
     if (!auth || auth.appid !== "3114" || !/^[1-9]\d{0,19}$/.test(auth.userid || "") ||
@@ -250,7 +318,7 @@
     catch (_) { notify("App 配置的月度记录查询失败，本次未领取。"); return; }
     var before = recordState(record, today);
     if (before === "unknown") {
-      notify(ok(record) ? "App 配置查询成功，但记录结构尚未识别，本次未领取。" : "App 配置查询被拒绝：" + failureDetail(record, auth)); return;
+      notify(ok(record) ? "App 配置查询成功，但记录结构尚未识别，本次未领取。" : "App 配置查询被拒绝：" + failureDetail(record, auth) + "。若登录已失效，请开启后台凭证更新并打开概念版；App 要求登录时先重新登录。"); return;
     }
     if (queryOnly) { notify("App 配置查询成功：" + (before === "claimed" ? "今天已领取" : "今天未领取") + "。本次仅查询。"); return; }
     if (before === "claimed") {
@@ -308,6 +376,7 @@
   }
 
   async function run() {
+    if (typeof $argument !== "undefined" && $argument === "refresh") { await refreshFromRequest(); return; }
     var native = read(NATIVE_KEY);
     if (native && native.version === 1) { await runNative(native); return; }
     if (typeof $argument !== "undefined" && $argument === "web_trial") {
@@ -364,6 +433,8 @@
     }
     notify("领取未确认，" + failureDetail(claim, auth) + "。今天不会重复提交。");
   }
-  run().catch(function (_) { notify("脚本执行异常，请查看 Loon 状态；今天不会自动重试领取。"); })
-    .then(function () { $done(); });
+  run().catch(function (_) {
+    if (typeof $argument !== "undefined" && $argument === "refresh") console.log("后台凭证更新未完成；未输出原始请求数据。");
+    else notify("脚本执行异常，请查看 Loon 状态；今天不会自动重试领取。");
+  }).then(function () { if (typeof $request !== "undefined" && $request) $done({}); else $done(); });
 }());

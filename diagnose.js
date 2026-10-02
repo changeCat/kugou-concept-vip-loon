@@ -11,7 +11,13 @@
   var auth = read("kgcv.auth.v1");
   var native = read("kgcv.native.v1");
   var observation = read("kgcv.observe.v1");
+  var refresh = read("kgcv.refresh.v1");
   var lines = [];
+  if (refresh) {
+    var refreshLabels = { checking: "正在验证新凭证，或上次验证被中断", updated: "已验证并更新凭证", rejected: "新凭证查询未通过，保留原配置", network_failed: "验证网络失败，保留原配置", changed: "验证时配置已改变，未覆盖" };
+    lines.push("后台凭证更新：" + (refreshLabels[refresh.status] || "未知状态") +
+      (Number.isFinite(Number(refresh.at)) ? "；" + new Date(Number(refresh.at)).toISOString() : ""));
+  }
   if (native && native.identity) {
     lines.push("App 已验签账号尾号 " + String(native.identity.userid || "").slice(-4) +
       "；月度查询配置 " + (native.record ? "已保存" : "未保存") + "；当天领取配置 " + (native.claim ? "已保存" : "未保存"));
