@@ -7,10 +7,6 @@
   var REFRESH_KEY = "kgcv.refresh.v1";
   var SALT = "LnT6xpN3khm36zse0QzvmgTZ3waWdRSA";
   var BASE_URL = "https://gateway.kugou.com";
-  var APP_ID = "3116";
-  var CLIENT_VERSION = "11440";
-  var USER_AGENT = "Android15-1070-" + CLIENT_VERSION + "-46-0-ReportPlaySongToServerProtocol-wifi";
-
   function read(key) {
     try { return JSON.parse($persistentStore.read(key) || "null"); }
     catch (_) { return null; }
@@ -27,7 +23,7 @@
     $notification.post("酷狗概念版每日 VIP", todayLocal(), message);
   }
 
-  // RFC 1321 MD5, used for KuGou Lite's Android request signature.
+  // RFC 1321 MD5 for captured request signing profiles.
   function md5(input) {
     var bytes = [];
     for (var p = 0; p < input.length; p++) {
@@ -76,39 +72,6 @@
     }).join("");
   }
 
-  function signedRequest(method, path, extra, auth) {
-    var clienttime = String(Math.floor(Date.now() / 1000));
-    var params = {
-      dfid: auth.dfid, mid: auth.mid, uuid: "-", appid: APP_ID,
-      clientver: CLIENT_VERSION, clienttime: clienttime,
-      token: auth.token, userid: auth.userid
-    };
-    Object.keys(extra).forEach(function (key) { params[key] = String(extra[key]); });
-    var toSign = Object.keys(params).sort().map(function (key) { return key + "=" + params[key]; }).join("");
-    params.signature = md5(SALT + toSign + SALT);
-    var query = Object.keys(params).map(function (key) {
-      return encodeURIComponent(key) + "=" + encodeURIComponent(params[key]);
-    }).join("&");
-    var options = {
-      url: BASE_URL + path + "?" + query,
-      timeout: 15000,
-      insecure: false,
-      headers: {
-        "User-Agent": USER_AGENT,
-        "Content-Type": "application/x-www-form-urlencoded",
-        dfid: auth.dfid, mid: auth.mid, clienttime: clienttime,
-        "kg-rc": "1", "kg-thash": "5d816a0", "kg-rec": "1",
-        "kg-rf": "B9EDA08A64250DEFFBCADDEE00F8F25F"
-      }
-    };
-    return new Promise(function (resolve, reject) {
-      $httpClient[method](options, function (error, response, data) {
-        if (error || !response || Number(response.status) !== 200) { reject(new Error("网络或 HTTP 请求失败")); return; }
-        try { resolve(JSON.parse(String(data))); }
-        catch (_) { reject(new Error("酷狗返回了无法解析的数据")); }
-      });
-    });
-  }
   function ok(value) { return value && Number(value.status) === 1 && Number(value.error_code || 0) === 0 && Number(value.errcode || 0) === 0; }
   function code(value) {
     var raw = value && (value.error_code != null ? value.error_code : value.errcode);
@@ -139,7 +102,6 @@
     var safeStatus = /^(?:0|1)$/.test(String(status)) ? String(status) : "未知";
     return "status=" + safeStatus + "，错误码=" + String(code(value)) + "，说明：" + safeMessage(value, auth);
   }
-  function sourceNumber(value) { return /^\d{1,8}$/.test(String(value || "")) ? String(value) : "未记录"; }
   function dateOf(item) {
     if (typeof item === "string") {
       var direct = item.match(/^\d{4}-\d{2}-\d{2}/);
@@ -297,16 +259,16 @@
         !/^[^\s;&]{8,512}$/.test(auth.token || "") || !/^[A-Za-z0-9._~-]{6,128}$/.test(auth.mid || "") ||
         !/^[A-Za-z0-9._~-]{1,128}$/.test(auth.dfid || "") || !/^[A-Za-z0-9._~-]{1,128}$/.test(auth.uuid || "") ||
         !/^\d{1,8}$/.test(auth.srcappid || "") || !/^\d{1,8}$/.test(auth.clientver || "")) {
-      notify("已保存的 App 接口配置不完整，请重新开启临时签名诊断并打开 VIP 记录页面。"); return;
+      notify("已保存的 App 接口配置不完整，请重新开启配置捕获并打开 VIP 记录页面。"); return;
     }
-    if (!native.record) { notify("尚未保存月度查询配置，请开启临时签名诊断并打开 VIP 记录页面。"); return; }
+    if (!native.record) { notify("尚未保存月度查询配置，请开启配置捕获并打开 VIP 记录页面。"); return; }
     var current = read(AUTH_KEY);
     if (current && current.appid === "3114" && current.userid && current.userid !== auth.userid) {
       notify("普通捕获与已验签接口属于不同账号，请只打开目标账号的 VIP 记录页面重新学习接口。"); return;
     }
     var today = todayLocal();
     var queryOnly = typeof $argument !== "undefined" && $argument === "query";
-    var webTrial = typeof $argument !== "undefined" && $argument === "web_trial";
+    var initializeClaim = typeof $argument !== "undefined" && $argument === "manual";
     var state = read(STATE_KEY);
     if (!queryOnly && state && state.userid === auth.userid && state.date === today && state.status === "confirmed") {
       notify("今天已确认领取，跳过重复请求。"); return;
@@ -333,23 +295,23 @@
       notify("今天已确认领取，跳过重复请求。"); return;
     }
     var claimConfig = native.claim;
-    var tryingWeb = !claimConfig && webTrial;
+    var tryingWeb = !claimConfig && initializeClaim;
     if (tryingWeb) {
       if (native.record.algorithm !== "Web") {
-        notify("测试 Web 领取需要已保存的 Web 月度查询配置，本次未领取。"); return;
+        notify("首次领取需要已保存的 Web 月度查询配置，本次未领取。"); return;
       }
-      // Compatibility trial, not a learned native App signature. Only persist on success.
+      // Initialize from the verified Web session on manual runs; persist only on success.
       claimConfig = {
         method: "POST", path: "/youth/v1/recharge/receive_vip_listen_song", algorithm: "Web",
         params: Object.assign({}, auth, { source_id: "90139", receive_day: today }),
         body: "", timeUnit: native.record.timeUnit,
-        headers: { "Content-Type": "application/x-www-form-urlencoded" }, source: "web_trial"
+        headers: { "Content-Type": "application/x-www-form-urlencoded" }, source: "manual"
       };
       if (native.record.headers && native.record.headers["User-Agent"]) claimConfig.headers["User-Agent"] = native.record.headers["User-Agent"];
-      console.log("手动测试 Web 领取：查询已确认今天未领取；使用已保存的同一会话，仅提交一次。领取接口是否接受此签名尚待验证。");
+      console.log("首次手动领取：查询已确认今天未领取，使用已保存的 Web 会话，仅提交一次。");
     }
     if (!claimConfig) {
-      notify("App 配置查询成功：今天未领取。尚缺领取接口配置，可手动运行“测试 Web 领取（当天一次）”验证；本次未提交领取。"); return;
+      notify("App 配置查询成功：今天未领取。尚缺领取接口配置，请运行“手动核对并领取 VIP”完成首次领取；本次未提交领取。"); return;
     }
     write(STATE_KEY, { userid: auth.userid, date: today, status: "uncertain" });
     var result;
@@ -379,60 +341,9 @@
     if (typeof $argument !== "undefined" && $argument === "refresh") { await refreshFromRequest(); return; }
     var native = read(NATIVE_KEY);
     if (native && native.version === 1) { await runNative(native); return; }
-    if (typeof $argument !== "undefined" && $argument === "web_trial") {
-      notify("测试 Web 领取需要先保存 Web 月度查询配置；请开启临时签名诊断并打开 VIP 记录页面。"); return;
-    }
-    var auth = read(AUTH_KEY);
-    if (!auth || !/^\d{1,20}$/.test(auth.userid || "") ||
-        !/^[^\s;&]{8,512}$/.test(auth.token || "") ||
-        !/^[A-Za-z0-9._~-]{6,128}$/.test(auth.mid || "") ||
-        !/^[A-Za-z0-9._~-]{1,128}$/.test(auth.dfid || "")) {
-      notify("尚无完整凭证。请在 Loon 启用 HTTPS 解密后打开已登录的酷狗概念版。");
-      return;
-    }
-    var today = todayLocal();
-    if (auth.appid === "3114") {
-      notify("已确定月度查询使用 Web 签名。请开启临时签名诊断并打开 VIP 记录页面，保存实际 uuid/srcappid 后再运行；不再尝试旧 Android 配置。"); return;
-    }
-    var state = read(STATE_KEY);
-    if (state && state.userid === auth.userid && state.date === today && state.status === "confirmed") {
-      notify("今天已确认领取，跳过重复请求。");
-      return;
-    }
-    var record;
-    console.log("请求配置：Android Lite appid=" + APP_ID + "，clientver=" + CLIENT_VERSION +
-      "；凭证来源 appid=" + sourceNumber(auth.appid) + "，clientver=" + sourceNumber(auth.clientver));
-    try { record = await signedRequest("get", "/youth/v1/activity/get_month_vip_record", { latest_limit: "100" }, auth); }
-    catch (_) { notify("月度领取记录查询失败，本次未发起领取。"); return; }
-    var before = recordState(record, today);
-    if (typeof $argument !== "undefined" && $argument === "query") {
-      notify(before === "unknown" ? "记录查询未确认：" + failureDetail(record, auth) : "记录查询成功：" + (before === "claimed" ? "今天已领取" : "今天未领取") + "。本次仅查询。"); return;
-    }
-    if (before === "claimed") {
-      write(STATE_KEY, { userid: auth.userid, date: today, status: "confirmed" });
-      notify("远端记录显示今天已领取。");
-      return;
-    }
-    if (before === "unknown") {
-      notify("无法确认今天是否已领取，本次未发起领取。记录接口：" + failureDetail(record, auth));
-      return;
-    }
-    if (state && state.userid === auth.userid && state.date === today && state.status === "uncertain") {
-      notify("今天的领取请求结果曾不明确；远端尚未确认，不重复提交。");
-      return;
-    }
-    // Persist before sending: a timeout or killed script must not trigger a second claim.
-    write(STATE_KEY, { userid: auth.userid, date: today, status: "uncertain" });
-    var claim;
-    try { claim = await signedRequest("post", "/youth/v1/recharge/receive_vip_listen_song", { source_id: "90139" }, auth); }
-    catch (_) { notify("领取请求结果不明确。下次仅核对远端记录，不会重复提交。"); return; }
-    if (ok(claim)) {
-      write(STATE_KEY, { userid: auth.userid, date: today, status: "confirmed" });
-      notify("当天 VIP 领取请求成功。");
-      return;
-    }
-    notify("领取未确认，" + failureDetail(claim, auth) + "。今天不会重复提交。");
+    notify("尚未保存签到配置。请开启配置捕获并打开概念版 VIP 记录页面，再手动领取。");
   }
+
   run().catch(function (_) {
     if (typeof $argument !== "undefined" && $argument === "refresh") console.log("后台凭证更新未完成；未输出原始请求数据。");
     else notify("脚本执行异常，请查看 Loon 状态；今天不会自动重试领取。");

@@ -38,7 +38,7 @@ function run(file, { data = new Map(), request, response, argument, replies = []
 function learn(data, kind = 'record', { extra = {}, body = '', status = 1, badSignature = false, person = identity, noBody = false } = {}) {
   const params = { ...person, clienttime: '1790820000', ...(kind === 'record' ? { latest_limit: '100' } : { source_id: '90139' }), ...extra };
   params.signature = badSignature ? '0'.repeat(32) : sign(params, body);
-  return run('signature-check.js', {
+  return run('capture.js', {
     data,
     request: { method: kind === 'record' ? 'GET' : 'POST', headers: { 'User-Agent': 'iPhone-Test', 'Content-Type': 'application/json' },
       ...(noBody ? {} : { body }), url: 'https://gateway.kugou.com' + (kind === 'record' ? recordPath : claimPath) + '?' + new URLSearchParams(params) },
@@ -65,9 +65,7 @@ test('learned Web GET preserves full identity and re-signs a fresh query without
   assert.equal(result.calls[0].options.headers['User-Agent'], 'iPhone-Test');
   assert.equal(data.has(stateKey), false);
   assert.match(result.notices.at(-1)[2], /今天未领取/);
-  const report = run('signature-check.js', { data });
-  await report.finished;
-  assert.equal(JSON.stringify([result.logs, result.notices, capture.logs, capture.notices, report.logs, report.notices]).includes('PRIVATE'), false);
+  assert.equal(JSON.stringify([result.logs, result.notices, capture.logs, capture.notices]).includes('PRIVATE'), false);
 });
 
 test('a valid record template alone cannot authorize a POST', async () => {
@@ -135,7 +133,7 @@ test('iOS credentials without learned parameters no longer use the failing Andro
   const data = new Map([['kgcv.auth.v1', JSON.stringify(identity)]]);
   const result = run('claim.js', { data, argument: 'manual' }); await result.finished;
   assert.equal(result.calls.length, 0);
-  assert.match(result.notices.at(-1)[2], /不再尝试旧 Android 配置/);
+  assert.match(result.notices.at(-1)[2], /尚未保存签到配置/);
 });
 
 test('legacy caches from another or unidentified client do not block the verified Concept session', async () => {
@@ -156,9 +154,9 @@ test('legacy caches from another or unidentified client do not block the verifie
   }
 });
 
-test('manual Web trial saves a configuration only after success, then cron can reuse it', async () => {
+test('manual initialization saves a configuration only after success, then cron can reuse it', async () => {
   const data = new Map(); await learn(data).finished;
-  const result = run('claim.js', { data, argument: 'web_trial',
+  const result = run('claim.js', { data, argument: 'manual',
     replies: [{ body: { status: 1, data: { records: [] } } }, { body: { status: 1, error_code: 0 } }],
     onRequest(method) {
       if (method === 'POST') {
@@ -179,7 +177,7 @@ test('manual Web trial saves a configuration only after success, then cron can r
   assert.equal(params.receive_day, today);
   assert.equal(post.body, '');
   assert.equal(post.headers['Content-Type'], 'application/x-www-form-urlencoded');
-  assert.equal(JSON.parse(data.get(nativeKey)).claim.source, 'web_trial');
+  assert.equal(JSON.parse(data.get(nativeKey)).claim.source, 'manual');
   assert.equal(JSON.parse(data.get(stateKey)).status, 'confirmed');
   assert.match(result.notices.at(-1)[2], /领取配置已保存/);
   assert.equal(JSON.stringify([result.logs, result.notices]).includes('PRIVATE'), false);
@@ -194,7 +192,7 @@ test('manual Web trial saves a configuration only after success, then cron can r
   assert.equal(new URL(cron.calls[1].options.url).searchParams.get('receive_day'), today);
 });
 
-test('Web trial stops when today is claimed, record is unknown or query fails', async () => {
+test('manual initialization stops when today is claimed, record is unknown or query fails', async () => {
   for (const reply of [
     { body: { status: 1, data: { records: [{ receive_day: today }] } } },
     { body: { status: 1, data: { unknown: true } } },
@@ -202,32 +200,32 @@ test('Web trial stops when today is claimed, record is unknown or query fails', 
     { error: 'timeout' }
   ]) {
     const data = new Map(); await learn(data).finished;
-    const result = run('claim.js', { data, argument: 'web_trial', replies: [reply] });
+    const result = run('claim.js', { data, argument: 'manual', replies: [reply] });
     await result.finished;
     assert.deepEqual(result.calls.map(c => c.method), ['GET']);
     assert.equal(JSON.parse(data.get(nativeKey)).claim, undefined);
   }
 });
 
-test('failed or timed out Web trial is not learned and cannot be submitted again that day', async () => {
+test('failed or timed out manual initialization is not learned and cannot be submitted again that day', async () => {
   for (const reply of [{ error: 'timeout' }, { body: { status: 0, error_code: 2006, msg: 'err signature PRIVATE+TOKEN==' } }]) {
     const data = new Map(); await learn(data).finished;
-    const result = run('claim.js', { data, argument: 'web_trial', replies: [{ body: { status: 1, data: { records: [] } } }, reply] });
+    const result = run('claim.js', { data, argument: 'manual', replies: [{ body: { status: 1, data: { records: [] } } }, reply] });
     await result.finished;
     assert.deepEqual(result.calls.map(c => c.method), ['GET', 'POST']);
     assert.equal(JSON.parse(data.get(nativeKey)).claim, undefined);
     assert.equal(JSON.parse(data.get(stateKey)).status, 'uncertain');
     assert.equal(JSON.stringify([result.logs, result.notices]).includes('PRIVATE'), false);
-    const again = run('claim.js', { data, argument: 'web_trial', replies: [{ body: { status: 1, data: { records: [] } } }] });
+    const again = run('claim.js', { data, argument: 'manual', replies: [{ body: { status: 1, data: { records: [] } } }] });
     await again.finished;
     assert.deepEqual(again.calls.map(c => c.method), ['GET']);
   }
 });
 
-test('Web trial requires learned Web parameters and cron never creates a candidate', async () => {
-  const missing = run('claim.js', { argument: 'web_trial', data: new Map([['kgcv.auth.v1', JSON.stringify({ ...identity, appid: '3116' })]]) });
+test('manual initialization requires learned Web parameters and cron never creates a candidate', async () => {
+  const missing = run('claim.js', { argument: 'manual', data: new Map([['kgcv.auth.v1', JSON.stringify({ ...identity, appid: '3116' })]]) });
   await missing.finished; assert.equal(missing.calls.length, 0);
-  for (const argument of [undefined, 'manual', 'query']) {
+  for (const argument of [undefined, 'query']) {
     const data = new Map(); await learn(data).finished;
     const result = run('claim.js', { data, argument, replies: [{ body: { status: 1, data: { records: [] } } }] });
     await result.finished;
@@ -237,9 +235,9 @@ test('Web trial requires learned Web parameters and cron never creates a candida
   }
 });
 
-test('successful Web trial does not overwrite a changed session', async () => {
+test('successful manual initialization does not overwrite a changed session', async () => {
   const data = new Map(); await learn(data).finished;
-  const result = run('claim.js', { data, argument: 'web_trial',
+  const result = run('claim.js', { data, argument: 'manual',
     replies: [{ body: { status: 1, data: { records: [] } } }, { body: { status: 1 } }],
     onRequest(method) {
       if (method === 'POST') {
@@ -257,8 +255,8 @@ test('successful Web trial does not overwrite a changed session', async () => {
 test('overlapping queries see the pending mutation before submitting another claim', async () => {
   const data = new Map(); await learn(data).finished;
   const replies = () => [{ body: { status: 1, data: { records: [] } } }, { body: { status: 1 } }];
-  const first = run('claim.js', { data, argument: 'web_trial', replies: replies() });
-  const second = run('claim.js', { data, argument: 'web_trial', replies: replies() });
+  const first = run('claim.js', { data, argument: 'manual', replies: replies() });
+  const second = run('claim.js', { data, argument: 'manual', replies: replies() });
   await Promise.all([first.finished, second.finished]);
   assert.equal([...first.calls, ...second.calls].filter(c => c.method === 'POST').length, 1);
 });
@@ -350,4 +348,69 @@ test('refresh cannot overwrite concurrent configuration changes', async () => {
   await result.finished;
   assert.equal(data.get(nativeKey), JSON.stringify(newer));
   assert.equal(JSON.parse(data.get('kgcv.refresh.v1')).status, 'changed');
+});
+
+test('capture handles literal plus tokens and rejects duplicate parameters and other clients', async () => {
+  const params = { ...identity, clienttime: '1790820000', latest_limit: '100' };
+  const url = 'https://gateway.kugou.com' + recordPath + '?' + new URLSearchParams({ ...params, signature: sign(params) });
+  const response = { status: 200, body: JSON.stringify({ status: 1 }) };
+  const request = { method: 'GET', headers: {}, url: url.replace('%2B', '+') };
+  const before = JSON.stringify(request);
+  const captured = run('capture.js', { request, response });
+  await captured.finished;
+  assert.equal(JSON.parse(captured.data.get(nativeKey)).identity.token, identity.token);
+  assert.equal(JSON.stringify(request), before);
+  for (const invalid of [url + '&token=OTHER-PRIVATE-TOKEN', url.replace('appid=3114', 'appid=3116'), url.replace(recordPath, '/youth/v1/other')]) {
+    const data = new Map(captured.data);
+    const original = Array.from(data);
+    const result = run('capture.js', { data, request: { ...request, url: invalid }, response });
+    await result.finished;
+    assert.deepEqual(Array.from(data), original);
+    assert.equal(JSON.stringify([result.logs, result.notices]).includes('PRIVATE'), false);
+  }
+});
+
+test('recapturing the intended account replaces a stale legacy account marker', async () => {
+  const data = new Map([['kgcv.auth.v1', JSON.stringify({ appid: '3114', userid: '87654321' })]]);
+  await learn(data).finished;
+  const result = run('claim.js', { data, argument: 'query', replies: [{ body: { status: 1, data: { records: [] } } }] });
+  await result.finished;
+  assert.equal(result.calls.length, 1);
+  assert.equal(JSON.parse(data.get('kgcv.auth.v1')).userid, identity.userid);
+});
+
+test('previously saved Web trial configuration works without recapturing and keeps duplicate protection', async () => {
+  const record = { method: 'GET', path: recordPath, algorithm: 'Web', params: { ...identity, latest_limit: '100' }, body: '', timeUnit: 's', headers: {} };
+  const claim = { method: 'POST', path: claimPath, algorithm: 'Web', params: { ...identity, source_id: '90139', receive_day: '2000-01-01' }, body: '', timeUnit: 's', headers: {}, source: 'web_trial' };
+  const data = new Map([[nativeKey, JSON.stringify({ version: 1, identity, record, claim })]]);
+  const before = data.get(nativeKey);
+  const result = run('claim.js', { data, replies: [{ body: { status: 1, data: { records: [] } } }, { body: { status: 1 } }] });
+  await result.finished;
+  assert.deepEqual(result.calls.map(c => c.method), ['GET', 'POST']);
+  assert.equal(data.get(nativeKey), before);
+  const again = run('claim.js', { data });
+  await again.finished;
+  assert.equal(again.calls.length, 0);
+});
+
+test('legacy credentials alone never trigger Android fallback requests', async () => {
+  for (const appid of ['3114', '3116', '1005', '']) {
+    const result = run('claim.js', { data: new Map([['kgcv.auth.v1', JSON.stringify({ ...identity, appid })]]) });
+    await result.finished;
+    assert.equal(result.calls.length, 0);
+    assert.match(result.notices.at(-1)[2], /配置捕获/);
+  }
+});
+
+test('query errors redact credentials and never submit a claim', async () => {
+  const data = new Map(); await learn(data).finished; await learn(data, 'claim').finished;
+  const result = run('claim.js', { data, replies: [{ body: { status: 0, error_code: 51002,
+    msg: `signature error token=${identity.token} userid=${identity.userid} mid=${identity.mid} https://gateway.kugou.com/?token=PRIVATE-UNKNOWN`
+  } }] });
+  await result.finished;
+  assert.deepEqual(result.calls.map(c => c.method), ['GET']);
+  assert.equal(data.has(stateKey), false);
+  const output = JSON.stringify([result.logs, result.notices]);
+  assert.match(output, /51002/);
+  for (const secret of ['PRIVATE', identity.userid]) assert.equal(output.includes(secret), false);
 });
